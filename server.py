@@ -83,7 +83,7 @@ def parse_args():
     )
     # Set timeout
     parser.add_argument(
-        "--timeout", metavar="TIMEOUT", type=float, default=30.0, help="Sets timeout"
+        "--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets timeout"
     )
     # Set rope_alpha
     parser.add_argument(
@@ -186,33 +186,31 @@ async def inference_loop():
     processing_started = True
     token_processing_start_time = None
 
+    settings_proto = ExLlamaV2Sampler.Settings()
+
+    token_count["read_tokens"] = 0
+    token_count["prompt_tokens"] = 0
+    token_count["gen_tokens"] = 0
+
+    # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
+    chunk_interval = 0.1
+    next_stream_time = asyncio.get_event_loop().time() + chunk_interval
+
+    input_ids = []
+    caches = []
+    settings = []
+    completion_queues = []
+    requests = []
+    output_ids = []
+
     while processing_started:
-        # Quick sleep to let the API server send back requests, or it waits serially for all these to finish
-        await asyncio.sleep(0.01)
-        if prompts_queue.qsize() == 0:
-            await asyncio.sleep(0.1)
-            continue  # No prompts to process yet.
-
-        # Start timing the token processing
-        # if token_processing_start_time is None:
-        token_processing_start_time = time.time()
-        token_count["read_tokens"] = 0
-        token_count["prompt_tokens"] = 0
-        token_count["gen_tokens"] = 0
-
-        input_ids = []
-        caches = []
-        settings = []
-        completion_queues = []
-        requests = []
-        output_ids = []
-
-        settings_proto = ExLlamaV2Sampler.Settings()
-
-        print(f"Starting at {time.time()}")
-        # XXX can batch things without "lining up" here, just add more when some leave
-        for _ in range(min(MAX_PROMPTS, prompts_queue.qsize())):
-            request: QueueRequest = await prompts_queue.get()
+        # enter this (possibly blocking) loop if there's nothing to do (ok to block)
+        # or if we could accept more work and the queue isn't empty (no blocking)
+        while len(requests) == 0 or (len(requests) < MAX_PROMPTS and prompts_queue.qsize() != 0):
+            try:
+                request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
+            except TimeoutError:
+                break
             token_count["read_tokens"] += request.ids.shape[-1] - 1
             batch_size = 1
             cache = ExLlamaV2Cache(
@@ -236,10 +234,8 @@ async def inference_loop():
             requests.append(request)
             output_ids.append(torch.empty((1, 0), dtype=torch.long))
 
-        print(f"Doing input_ids at {time.time()}")
-        chunk_interval = 0.1
-        next_stream_time = asyncio.get_event_loop().time() + chunk_interval
-        while input_ids:
+        # process as long as there are incomplete requests
+        if len(requests) > 0:
             send_chunk = False
             now = asyncio.get_event_loop().time()
             if now >= next_stream_time:
@@ -307,20 +303,20 @@ async def inference_loop():
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
             await asyncio.sleep(0)
 
-        current_time = time.time()
-        time_elapsed_seconds = current_time - token_processing_start_time
-        total_processing_time += time_elapsed_seconds
-        read_speed = token_count["read_tokens"] / time_elapsed_seconds
-        generation_speed = token_count["gen_tokens"] / time_elapsed_seconds
-        average_gen_speed = token_count["total_tokens"] / total_processing_time
-
-        # Log stats to the console
-        print(
-            f"Batch process done. Read {token_count['read_tokens']} tokens at {read_speed:.2f} tokens/s. "
-            f"Generated {token_count['gen_tokens']} tokens at {generation_speed:.2f} tokens/s.\n"
-            f"This thread generated a total of {token_count['total_tokens']} tokens at {average_gen_speed:.2f} tokens/s."
-        )
-        token_processing_start_time = None  # Reset the start time
+        #current_time = time.time()
+        #time_elapsed_seconds = current_time - token_processing_start_time
+        #total_processing_time += time_elapsed_seconds
+        #read_speed = token_count["read_tokens"] / time_elapsed_seconds
+        #generation_speed = token_count["gen_tokens"] / time_elapsed_seconds
+        #average_gen_speed = token_count["total_tokens"] / total_processing_time
+#
+        ## Log stats to the console
+        #print(
+        #    f"Batch process done. Read {token_count['read_tokens']} tokens at {read_speed:.2f} tokens/s. "
+        #    f"Generated {token_count['gen_tokens']} tokens at {generation_speed:.2f} tokens/s.\n"
+        #    f"This thread generated a total of {token_count['total_tokens']} tokens at {average_gen_speed:.2f} tokens/s."
+        #)
+        #token_processing_start_time = None  # Reset the start time
 
 
 @app.get("/")
