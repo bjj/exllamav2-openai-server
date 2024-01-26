@@ -160,8 +160,9 @@ class QueueRequest(BaseModel):
 
 class QueueResponse(BaseModel):
     content: str
-    final: bool = False
-
+    finish_reason: str | None = None
+    completion_tokens: int = 0
+    prompt_tokens: int = 0
 
 prompts_queue = asyncio.Queue()
 
@@ -198,6 +199,7 @@ async def inference_loop():
     while processing_started:
         # enter this (possibly blocking) loop if there's nothing to do (ok to block)
         # or if we could accept more work and the queue isn't empty (no blocking)
+        added = False
         while len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0):
             try:
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
@@ -224,6 +226,9 @@ async def inference_loop():
             item.request = request
             item.output_ids = torch.empty((1, 0), dtype=torch.long)
             work.append(item)
+            added = True
+        if added:
+            print(f"workitems {len(work)}")
 
         # process as long as there are incomplete requests
         if work:
@@ -251,7 +256,9 @@ async def inference_loop():
                 stopped = token.item() == tokenizer.eos_token_id
                 limited = item.cache.current_seq_len == item.cache.max_seq_len
                 final = stopped or limited
-                finish_reason = "stop" if stopped and not limited else "length"
+                finish_reason = None
+                if final:
+                    finish_reason = "stop" if stopped and not limited else "length"
 
                 if final or (request.stream and send_chunk):
                     try:
@@ -261,7 +268,8 @@ async def inference_loop():
                             item.first_content = False
                         if final:
                             content = content.rstrip()
-                        response = QueueResponse(content=content, final=final)
+                        response = QueueResponse(content=content, finish_reason=finish_reason,
+                                                 prompt_tokens=item.prompt_tokens, completion_tokens=item.completion_tokens)
                         await item.completion_queue.put(response)
                     except Exception as e:
                         print(f"Error processing completed prompt: {e}")
@@ -275,6 +283,8 @@ async def inference_loop():
             # Remove completed prompts from the list
             for i in eos:
                 work.pop(i)
+            if eos and prompts_queue.qsize() == 0:
+                print(f"workitems {len(work)}")
 
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
             await asyncio.sleep(0)
@@ -306,8 +316,6 @@ def read_root():
 )
 async def chat_completions(prompt: ChatCompletions):
     global modelfile, prompts_queue, token_count, config
-
-    print("model? ", prompt.model)
 
     # Listify stop
     stop = prompt.stop
@@ -343,8 +351,7 @@ async def chat_completions(prompt: ChatCompletions):
                 qresponse: QueueResponse = await asyncio.wait_for(
                     request.completion_queue.get(), timeout=args.timeout
                 )
-                if qresponse.final:
-                    finish_reason = "stop"  # XXX
+                finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
                 raise HTTPException(
                     status_code=504, detail="Processing the prompt timed out."
@@ -378,7 +385,7 @@ async def chat_completions(prompt: ChatCompletions):
                 choice = ChatCompletionsResponse.Choice(
                     finish_reason=finish_reason, index=1, message=message
                 )
-                usage = ChatCompletionsResponse.Usage(prompt_tokens=len(request.ids))
+                usage = ChatCompletionsResponse.Usage(prompt_tokens=qresponse.prompt_tokens, completion_tokens=qresponse.completion_tokens,total_tokens=qresponse.prompt_tokens+qresponse.completion_tokens)
                 response = ChatCompletionsResponse(
                     id=request.request_id,
                     choices=[choice],

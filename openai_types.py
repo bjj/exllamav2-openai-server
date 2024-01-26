@@ -39,9 +39,9 @@ class ChatCompletionsResponse(BaseModel):
         logprobs: None = None
     
     class Usage(BaseModel):
-        completion_tokens: int = 1
-        prompt_tokens: int
-        total_tokens: int = 1
+        completion_tokens: int = 0
+        prompt_tokens: int = 0
+        total_tokens: int = 0
         
     id: str
     choices: list[ChatCompletionsResponse.Choice] = []
