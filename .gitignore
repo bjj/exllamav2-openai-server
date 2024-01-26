@@ -1,3 +1,6 @@
+# test files for continue.dev
+junk.*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
