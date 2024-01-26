@@ -12,8 +12,6 @@ import ollama_template
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/exllamav2"
 )
-
-# Assuming `exllamav2` can be imported with paths set correctly
 from exllamav2 import (
     ExLlamaV2,
     ExLlamaV2Config,
@@ -22,84 +20,31 @@ from exllamav2 import (
     ExLlamaV2Cache_8bit,
     ExLlamaV2Lora,
 )
-
 from exllamav2.generator import ExLlamaV2BaseGenerator, ExLlamaV2Sampler
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Command line arguments for a Python script."
-    )
-    # Set verbose
-    parser.add_argument(
-        "--verbose", action="store_true", default=False, help="Sets verbose"
-    )
-    # Set model_directory
-    parser.add_argument(
-        "--model", metavar="MODEL_DIRECTORY", type=str, help="Sets model_directory"
-    )
-    # Set lora
-    parser.add_argument(
-        "--lora", metavar="LORA_DIRECTORY", type=str, help="Sets lora_directory"
-    )
-    # Set host
-    parser.add_argument(
-        "--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host"
-    )
-    # Set port
-    parser.add_argument(
-        "--port", metavar="PORT", type=int, default=8000, help="Sets port"
-    )
-    # Set max_seq_len
-    parser.add_argument(
-        "--max-model-len", metavar="MAX_SEQ_LEN", type=int, help="Sets max_seq_len"
-    )
-    # Set max_input_len
-    parser.add_argument(
-        "--max-input-len", metavar="MAX_INPUT_LEN", type=int, help="Sets max_input_len"
-    )
-    # Set gpu_split
-    parser.add_argument(
-        "--gpu_split",
-        metavar="GPU_SPLIT",
-        type=str,
-        default="",
-        help="Sets array gpu_split and accepts input like 16,24",
-    )
-    # Set gpu_balance
+    parser = argparse.ArgumentParser(description="Command line arguments for a Python script.")
+    parser.add_argument("--verbose", action="store_true", default=False, help="Sets verbose")
+    parser.add_argument("--model", metavar="MODEL_DIRECTORY", type=str, help="Sets model_directory")
+    parser.add_argument("--lora", metavar="LORA_DIRECTORY", type=str, help="Sets lora_directory")
+    parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
+    parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
+    parser.add_argument("--max-model-len", metavar="MAX_SEQ_LEN", type=int, help="Sets max_seq_len")
+    parser.add_argument("--max-input-len", metavar="MAX_INPUT_LEN", type=int, help="Sets max_input_len")
+    parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
+                        help="Sets array gpu_split and accepts input like 16,24",)
     parser.add_argument(
         "--gpu_balance",
         action="store_true",
         default=False,
         help="Balance workers on GPUs to maximize throughput. Make sure --gpu_split is set to the full memory of all cards.",
     )
-    # Set MAX_PROMPTS
-    parser.add_argument(
-        "--max_prompts",
-        metavar="MAX_PROMPTS",
-        type=int,
-        default=16,
-        help="Max prompts to process at once",
-    )
-    # Set timeout
-    parser.add_argument(
-        "--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets timeout"
-    )
-    # Set rope_alpha
-    parser.add_argument(
-        "--rope_alpha",
-        metavar="rope_alpha",
-        type=float,
-        default=1.0,
-        help="Sets rope_alpha",
-    )
-    # Set rope_scale
-    parser.add_argument(
-        "--rope_scale",
-        metavar="rope_scale",
-        type=float,
-        help="Sets rope_scale",
-    )
+    parser.add_argument("--max_prompts", metavar="MAX_PROMPTS", type=int,
+                        default=16, help="Max prompts to process at once", )
+    parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets timeout")
+    parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha", )
+    parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale", )
     parser.add_argument(
         "--embiggen",
         metavar="embiggen",
@@ -114,13 +59,8 @@ def parse_args():
         default=False,
         help="Use 8 bit cache (not implemented)",
     )
-    parser.add_argument(
-        "--num_workers",
-        metavar="NUM_WORKERS",
-        type=int,
-        default=1,
-        help="Number of worker processes to use",
-    )
+    parser.add_argument("--num_workers", metavar="NUM_WORKERS", type=int,
+                        default=1, help="Number of worker processes to use", )
 
     return parser.parse_args()
 
@@ -164,6 +104,7 @@ class QueueResponse(BaseModel):
     completion_tokens: int = 0
     prompt_tokens: int = 0
 
+
 prompts_queue = asyncio.Queue()
 
 processing_started = False
@@ -171,6 +112,7 @@ model = None
 modelfile = None
 tokenizer = None
 loras = []
+
 
 class WorkItem:
     input_ids: list
@@ -182,7 +124,7 @@ class WorkItem:
     completion_tokens: int = 0
     prompt_tokens: int = 0
     first_content: bool = True
-    
+
 
 async def inference_loop():
     global prompts_queue, processing_started
@@ -247,7 +189,7 @@ async def inference_loop():
                 item = work[i]
                 r = random.random()
                 token, _, _ = ExLlamaV2Sampler.sample(
-                    logits[i : i + 1, :, :], item.settings, item.input_ids, r, tokenizer
+                    logits[i: i + 1, :, :], item.settings, item.input_ids, r, tokenizer
                 )
                 item.output_ids = torch.cat([item.output_ids, token], dim=1)
                 item.input_ids = torch.cat([item.input_ids, token], dim=1)
@@ -296,13 +238,13 @@ async def inference_loop():
         #generation_speed = token_count["gen_tokens"] / time_elapsed_seconds
         #average_gen_speed = token_count["total_tokens"] / total_processing_time
 #
-        ## Log stats to the console
-        #print(
+        # Log stats to the console
+        # print(
         #    f"Batch process done. Read {token_count['read_tokens']} tokens at {read_speed:.2f} tokens/s. "
         #    f"Generated {token_count['gen_tokens']} tokens at {generation_speed:.2f} tokens/s.\n"
         #    f"This thread generated a total of {token_count['total_tokens']} tokens at {average_gen_speed:.2f} tokens/s."
-        #)
-        #token_processing_start_time = None  # Reset the start time
+        # )
+        # token_processing_start_time = None  # Reset the start time
 
 
 @app.get("/")
@@ -326,7 +268,7 @@ async def chat_completions(prompt: ChatCompletions):
 
     chat = ollama_template.Prompt(modelfile).chatString(prompt.messages)
     print(chat)
-    
+
     request = QueueRequest(
         ids=tokenizer.encode(chat),
         completion_queue=asyncio.Queue(0),
@@ -348,21 +290,12 @@ async def chat_completions(prompt: ChatCompletions):
         finish_reason = None
         while finish_reason is None:
             try:
-                qresponse: QueueResponse = await asyncio.wait_for(
-                    request.completion_queue.get(), timeout=args.timeout
-                )
-                finish_reason = qresponse.finish_reason
+                qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout) finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
-                raise HTTPException(
-                    status_code=504, detail="Processing the prompt timed out."
-                )
+                raise HTTPException(status_code=504, detail="Processing the prompt timed out.")
             if request.stream:
-                delta = ChatCompletionsChunkResponse.Choice.Delta(
-                    content=qresponse.content, role="assistant"
-                )
-                choice = ChatCompletionsChunkResponse.Choice(
-                    finish_reason=finish_reason, index=1, delta=delta
-                )
+                delta = ChatCompletionsChunkResponse.Choice.Delta(content=qresponse.content, role="assistant")
+                choice = ChatCompletionsChunkResponse.Choice(finish_reason=finish_reason, index=1, delta=delta)
                 response = ChatCompletionsChunkResponse(
                     id=request.request_id,
                     choices=[choice],
@@ -376,16 +309,14 @@ async def chat_completions(prompt: ChatCompletions):
                 yield response
             else:
                 if finish_reason is None:
-                    raise HTTPException(
-                        status_code=505, detail="Tried to stream non-streaming request"
-                    )
-                message = ChatCompletionsResponse.Choice.Message(
-                    content=qresponse.content, role="assistant"
-                )
-                choice = ChatCompletionsResponse.Choice(
-                    finish_reason=finish_reason, index=1, message=message
-                )
-                usage = ChatCompletionsResponse.Usage(prompt_tokens=qresponse.prompt_tokens, completion_tokens=qresponse.completion_tokens,total_tokens=qresponse.prompt_tokens+qresponse.completion_tokens)
+                    raise HTTPException(status_code=505, detail="Tried to stream non-streaming request")
+                message = ChatCompletionsResponse.Choice.Message(content=qresponse.content, role="assistant")
+                choice = ChatCompletionsResponse.Choice(finish_reason=finish_reason, index=1, message=message)
+                usage = ChatCompletionsResponse.Usage(
+                    prompt_tokens=qresponse.prompt_tokens,
+                    completion_tokens=qresponse.completion_tokens,
+                    total_tokens=qresponse.prompt_tokens +
+                    qresponse.completion_tokens)
                 response = ChatCompletionsResponse(
                     id=request.request_id,
                     choices=[choice],
@@ -414,9 +345,9 @@ def setup_model():
     if args.rope_alpha is not None:
         config.scale_rope_alpha = args.rope_alpha
     if args.max_model_len is not None:
-       config.max_seq_len = args.max_model_len
+        config.max_seq_len = args.max_model_len
     if args.max_input_len is not None:
-       config.max_input_len = args.max_input_len
+        config.max_input_len = args.max_input_len
     config.max_batch_size = args.max_prompts
 
     print("Loading model: " + model_directory)
@@ -467,7 +398,7 @@ def setup_model():
 
     # Embiggen the model x times without increasing memory usage
     for i in range(args.embiggen):
-        ## mix layers here
+        # mix layers here
         layer_arrangement = list(range(0, 14)) + list(range(4, 22))
         # list(range(8, 18)) +
         # modules arangement: [embedding, [...layers], rms-norm, head]
@@ -475,7 +406,7 @@ def setup_model():
         old_modules = model.modules
         model.modules = old_modules[:1]
         for idx in layer_arrangement:
-            model.modules += old_modules[idx * 2 + 1 : idx * 2 + 3]
+            model.modules += old_modules[idx * 2 + 1: idx * 2 + 3]
         model.modules += old_modules[-2:]
         model.head_layer_idx = len(model.modules) - 1
         model.config.num_hidden_layers = len(layer_arrangement)
