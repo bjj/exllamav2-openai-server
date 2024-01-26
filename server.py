@@ -376,7 +376,7 @@ async def chat_completions(prompt: ChatCompletions):
                     status_code=504, detail="Processing the prompt timed out."
                 )
             if request.stream:
-                delta = ChatCompletionsChunkResponseDelta(
+                delta = ChatCompletionsChunkResponse.Choice.Delta(
                     content=qresponse.content, role="assistant"
                 )
                 choice = ChatCompletionsChunkResponse.Choice(
@@ -398,13 +398,13 @@ async def chat_completions(prompt: ChatCompletions):
                     raise HTTPException(
                         status_code=505, detail="Tried to stream non-streaming request"
                     )
-                message = ChatCompletionsResponseMessage(
+                message = ChatCompletionsResponse.Choice.Message(
                     content=qresponse.content, role="assistant"
                 )
-                choice = ChatCompletionsResponseChoice(
+                choice = ChatCompletionsResponse.Choice(
                     finish_reason=finish_reason, index=1, message=message
                 )
-                usage = ChatCompletionsResponseUsage(prompt_tokens=len(request.ids))
+                usage = ChatCompletionsResponse.Usage(prompt_tokens=len(request.ids))
                 response = ChatCompletionsResponse(
                     id=request.request_id,
                     choices=[choice],

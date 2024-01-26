@@ -5,7 +5,7 @@
 import re
 import typing
 from pydantic import BaseModel
-from openai_types import ChatCompletionsMessage
+from openai_types import ChatCompletions
 
 deepseek_coder_template = (
     "{{ .System }}\n### Instruction:\n{{ .Prompt }}\n### Response:\n"
@@ -57,7 +57,7 @@ class Prompt:
 
         self.result += subbed
 
-    def chatString(self, messages: list[ChatCompletionsMessage]):
+    def chatString(self, messages: list[ChatCompletions.Message]):
         if self.result:
             raise ("Do not re-use this object")
         for m in messages:
@@ -90,18 +90,18 @@ def main():
     model = ModelFile()
     p = Prompt(model)
     messages = [
-        ChatCompletionsMessage(content="MySystemMessage", role="system"),
-        ChatCompletionsMessage(content="What is my name?", role="user"),
-        ChatCompletionsMessage(content="King Arthur", role="assistant"),
-        ChatCompletionsMessage(content="What is my quest?", role="user"),
+        ChatCompletions.Message(content="MySystemMessage", role="system"),
+        ChatCompletions.Message(content="What is my name?", role="user"),
+        ChatCompletions.Message(content="King Arthur", role="assistant"),
+        ChatCompletions.Message(content="What is my quest?", role="user"),
     ]
     print(p.chatString(messages))
 
     p = Prompt(model)
     messages = [
-        ChatCompletionsMessage(content="What is my name?", role="user"),
-        ChatCompletionsMessage(content="King Arthur", role="assistant"),
-        ChatCompletionsMessage(content="What is my quest?", role="user"),
+        ChatCompletions.Message(content="What is my name?", role="user"),
+        ChatCompletions.Message(content="King Arthur", role="assistant"),
+        ChatCompletions.Message(content="What is my quest?", role="user"),
     ]
     print(p.chatString(messages))
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 from pydantic import BaseModel
 
-class ChatCompletionsMessage(BaseModel):
-    content: str
-    role: str
-    name: str | None = None
-
 class ChatCompletions(BaseModel):
-    messages: list[ChatCompletionsMessage]
+    class Message(BaseModel):
+        content: str
+        role: str
+        name: str | None = None
+    
+    messages: list[ChatCompletions.Message]
     model: str
     frequency_penalty: float = 0.0
     logic_bias: dict | None = None
@@ -26,41 +26,43 @@ class ChatCompletions(BaseModel):
     tool_choice: str | dict | None = None
     user: str | None = None
 
-class ChatCompletionsResponseMessage(BaseModel):
-    content: str | None = None
-    tool_calls: list | None = None
-    role: str
-
-class ChatCompletionsResponseChoice(BaseModel):
-    finish_reason: str  # stop / length / content_filter / tool_calls / function_call
-    index: int
-    message: ChatCompletionsResponseMessage
-    logprobs: None = None
-
-class ChatCompletionsResponseUsage(BaseModel):
-    completion_tokens: int = 1
-    prompt_tokens: int
-    total_tokens: int = 1
-
 class ChatCompletionsResponse(BaseModel):
+    class Choice(BaseModel):
+        class Message(BaseModel):
+            content: str | None = None
+            tool_calls: list | None = None
+            role: str
+            
+        finish_reason: str  # stop / length / content_filter / tool_calls / function_call
+        index: int
+        message: ChatCompletionsResponse.Choice.Message
+        logprobs: None = None
+    
+    class Usage(BaseModel):
+        completion_tokens: int = 1
+        prompt_tokens: int
+        total_tokens: int = 1
+        
     id: str
-    choices: list[ChatCompletionsResponseChoice] = []
+    choices: list[ChatCompletionsResponse.Choice] = []
     created: int
     model: str
     system_fingerprint: str = "exllamav2"
     object: str = "chat.completion"
-    usage: ChatCompletionsResponseUsage
+    usage: ChatCompletionsResponse.Usage
 
-class ChatCompletionsChunkResponseDelta(BaseModel):
-    content: str | None = None
-    tool_calls: list | None = None
-    role: str
-
+ChatCompletionsResponse.update_forward_refs()
+ChatCompletionsResponse.Choice.update_forward_refs()
 
 
 class ChatCompletionsChunkResponse(BaseModel):
     class Choice(BaseModel):
-        delta: ChatCompletionsChunkResponseDelta
+        class Delta(BaseModel):
+            content: str | None = None
+            tool_calls: list | None = None
+            role: str
+            
+        delta: ChatCompletionsChunkResponse.Choice.Delta
         finish_reason: str | None = None # stop / length / content_filter / tool_calls / function_call
         index: int
         logprobs: None = None
@@ -71,3 +73,6 @@ class ChatCompletionsChunkResponse(BaseModel):
     model: str
     system_fingerprint: str = "exllamav2"
     object: str = "chat.completion.chunk"
+    
+ChatCompletionsChunkResponse.update_forward_refs()
+ChatCompletionsChunkResponse.Choice.update_forward_refs()
