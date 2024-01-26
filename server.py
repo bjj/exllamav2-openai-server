@@ -108,13 +108,6 @@ def parse_args():
         help="Duplicates some attention layers this many times to make larger frankenmodels dynamically. May increase cromulence on benchmarks.",
     )
     parser.add_argument(
-        "--num_experts",
-        metavar="NUM_EXPERTS",
-        type=int,
-        default=2,
-        help="Number of experts in a model like Mixtral (not implemented yet)",
-    )
-    parser.add_argument(
         "--cache_8bit",
         metavar="CACHE_8BIT",
         type=bool,
@@ -172,133 +165,116 @@ class QueueResponse(BaseModel):
 
 prompts_queue = asyncio.Queue()
 
-token_count = {"prompt_tokens": 0, "gen_tokens": 0, "read_tokens": 0, "total_tokens": 0}
 processing_started = False
 model = None
 modelfile = None
 tokenizer = None
-total_processing_time = 0
 loras = []
 
+class WorkItem:
+    input_ids: list
+    output_ids: list
+    cache: any
+    settings: any
+    completion_queue: any
+    request: QueueRequest
+    completion_tokens: int = 0
+    prompt_tokens: int = 0
+    first_content: bool = True
+    
 
 async def inference_loop():
-    global prompts_queue, token_count, processing_started, total_processing_time
+    global prompts_queue, processing_started
     processing_started = True
-    token_processing_start_time = None
 
     settings_proto = ExLlamaV2Sampler.Settings()
-
-    token_count["read_tokens"] = 0
-    token_count["prompt_tokens"] = 0
-    token_count["gen_tokens"] = 0
 
     # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
     chunk_interval = 0.1
     next_stream_time = asyncio.get_event_loop().time() + chunk_interval
 
-    input_ids = []
-    caches = []
-    settings = []
-    completion_queues = []
-    requests = []
-    output_ids = []
+    work: list[WorkItem] = []
 
     while processing_started:
         # enter this (possibly blocking) loop if there's nothing to do (ok to block)
         # or if we could accept more work and the queue isn't empty (no blocking)
-        while len(requests) == 0 or (len(requests) < MAX_PROMPTS and prompts_queue.qsize() != 0):
+        while len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0):
             try:
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
                 break
-            token_count["read_tokens"] += request.ids.shape[-1] - 1
+            item = WorkItem()
+            item.input_ids = request.ids
+            item.prompt_tokens = request.ids.shape[-1] - 1
             batch_size = 1
-            cache = ExLlamaV2Cache(
+            item.cache = ExLlamaV2Cache(
                 model,
                 max_seq_len=(request.ids.size(1) + request.max_tokens),
                 batch_size=batch_size,
             )
-            model.forward(request.ids[:, :-1], cache, preprocess_only=True)
-            input_ids.append(request.ids)
-            caches.append(cache)
-            settings_clone = settings_proto.clone()
-            settings_clone.temperature = request.temperature
-            settings_clone.top_p = request.top_p
-            settings_clone.top_k = request.top_k
-            settings_clone.token_repetition_penalty = request.token_repetition_penalty
-            settings_clone.token_presence_penalty = request.token_presence_penalty
-            settings_clone.token_frequency_penalty = request.token_frequency_penalty
-            settings_clone.first_content = True # XXX ugly
-            settings.append(settings_clone)
-            completion_queues.append(request.completion_queue)
-            requests.append(request)
-            output_ids.append(torch.empty((1, 0), dtype=torch.long))
+            model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
+            item.settings = settings_proto.clone()
+            item.settings.temperature = request.temperature
+            item.settings.top_p = request.top_p
+            item.settings.top_k = request.top_k
+            item.settings.token_repetition_penalty = request.token_repetition_penalty
+            item.settings.token_presence_penalty = request.token_presence_penalty
+            item.settings.token_frequency_penalty = request.token_frequency_penalty
+            item.completion_queue = request.completion_queue
+            item.request = request
+            item.output_ids = torch.empty((1, 0), dtype=torch.long)
+            work.append(item)
 
         # process as long as there are incomplete requests
-        if len(requests) > 0:
+        if work:
             send_chunk = False
             now = asyncio.get_event_loop().time()
             if now >= next_stream_time:
                 next_stream_time = now + chunk_interval
                 send_chunk = True
 
-            inputs = torch.cat([x[:, -1:] for x in input_ids], dim=0)
-            logits = (
-                model.forward(inputs, caches, input_mask=None, loras=loras)
-                .float()
-                .cpu()
-            )
+            inputs = torch.cat([w.input_ids[:, -1:] for w in work], dim=0)
+            caches = [w.cache for w in work]
+            logits = model.forward(inputs, caches, input_mask=None, loras=loras).float().cpu()
 
             eos = []
-            for i in range(len(input_ids)):
+            for i in range(len(work)):
+                item = work[i]
                 r = random.random()
                 token, _, _ = ExLlamaV2Sampler.sample(
-                    logits[i : i + 1, :, :], settings[i], input_ids[i], r, tokenizer
+                    logits[i : i + 1, :, :], item.settings, item.input_ids, r, tokenizer
                 )
-                output_ids[i] = torch.cat([output_ids[i], token], dim=1)
-                input_ids[i] = torch.cat([input_ids[i], token], dim=1)
-                token_count["gen_tokens"] += 1
-                token_count["total_tokens"] += 1
+                item.output_ids = torch.cat([item.output_ids, token], dim=1)
+                item.input_ids = torch.cat([item.input_ids, token], dim=1)
+                item.completion_tokens += 1
 
-                final = (
-                    token.item() == tokenizer.eos_token_id
-                    or caches[i].current_seq_len == caches[i].max_seq_len
-                )
-                finish_reason = (
-                    "stop"
-                    if final and token.item() == tokenizer.eos_token_id
-                    else "length"
-                )
-                # print(f"Stopping for token: {token.item()}, settings eos: {tokenizer.eos_token_id}, tokenizer eos: {tokenizer.eos_token_id}")
+                stopped = token.item() == tokenizer.eos_token_id
+                limited = item.cache.current_seq_len == item.cache.max_seq_len
+                final = stopped or limited
+                finish_reason = "stop" if stopped and not limited else "length"
+
                 if final or (request.stream and send_chunk):
                     try:
-                        content = tokenizer.decode(output_ids[i])[0]
-                        if settings[i].first_content:
+                        content = tokenizer.decode(item.output_ids)[0]
+                        if item.first_content:
                             content = content.lstrip()
-                            settings[i].first_content = False
+                            item.first_content = False
                         if final:
                             content = content.rstrip()
                         response = QueueResponse(content=content, final=final)
-                        completion_queue = completion_queues[i]
-                        await completion_queue.put(response)
+                        await item.completion_queue.put(response)
                     except Exception as e:
                         print(f"Error processing completed prompt: {e}")
                         final = True
                     if final:
                         eos.insert(0, i)  # Indices of completed prompts
                     else:
-                        output_ids[i] = torch.empty(
-                            (1, 0), dtype=torch.long
-                        )  # reset after sending stream delta
+                        # reset after sending stream delta
+                        item.output_ids = torch.empty((1, 0), dtype=torch.long)
 
-            # Remove completed prompts from the lists
+            # Remove completed prompts from the list
             for i in eos:
-                input_ids.pop(i)
-                output_ids.pop(i)
-                caches.pop(i)
-                settings.pop(i)
-                completion_queues.pop(i)
-                requests.pop(i)
+                work.pop(i)
 
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
             await asyncio.sleep(0)
@@ -355,8 +331,6 @@ async def chat_completions(prompt: ChatCompletions):
         stop=stop,
         stream=prompt.stream,
     )
-
-    token_count["prompt_tokens"] += len(request.ids) - 1
 
     await prompts_queue.put(request)
 
