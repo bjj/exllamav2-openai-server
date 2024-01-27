@@ -1,9 +1,8 @@
 import sys, os, time, torch, random, asyncio, json, argparse, pathlib, gc
 import typing
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.websockets import WebSocket
-from fastapi.exceptions import WebSocketException
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.encoders import jsonable_encoder
 from openai_types import *
@@ -96,11 +95,9 @@ class ServerStatus:
 
 status = ServerStatus()
 
-class QueueRequestModelChange(BaseModel):
-    modelfile: typing.Any
-    
 class QueueRequest(BaseModel):
     request_id: str = f"exllamav2-{next_request_index()}"
+    modelfile: typing.Any
     messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
     max_tokens: int | None = None
@@ -112,7 +109,7 @@ class QueueRequest(BaseModel):
     token_frequency_penalty: float = 0.0
     stop: list[str]
     stream: bool = False
-
+    finish_reason: str | None = None
 
 class QueueResponse(BaseModel):
     content: str
@@ -154,50 +151,65 @@ async def inference_loop():
 
     work: list[WorkItem] = []
 
+    def add_workitem(request):
+        if request.finish_reason:
+            return
+        
+        item = WorkItem()
+        
+        chat = ollama_template.Prompt(modelfile).chatString(request.messages)
+        #print(chat)
+
+        item.input_ids = tokenizer.encode(chat)
+        item.prompt_tokens = item.input_ids.shape[-1] - 1
+        batch_size = 1
+        max_tokens = request.max_tokens or config.max_seq_len
+        CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
+        item.cache = CacheClass(model, max_seq_len=(item.input_ids.size(1) + max_tokens), batch_size=batch_size)
+        model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
+        item.settings = settings_proto.clone()
+        item.settings.temperature = request.temperature
+        item.settings.top_p = request.top_p
+        item.settings.top_k = request.top_k
+        item.settings.token_repetition_penalty = request.token_repetition_penalty
+        item.settings.token_presence_penalty = request.token_presence_penalty
+        item.settings.token_frequency_penalty = request.token_frequency_penalty
+        item.completion_queue = request.completion_queue
+        item.request = request
+        item.output_ids = torch.empty((1, 0), dtype=torch.long)
+        work.append(item)
+        
     while processing_started:
+        added = False
+        
+        # If we need a new model, handle that when the work queue drains
         if pending_model_request and not work:
             modelfile = pending_model_request.modelfile
             await load_model()
+            add_workitem(pending_model_request)
+            added = True
             pending_model_request = None
 
-        # enter this (possibly blocking) loop if there's nothing to do (ok to block)
-        # or if we could accept more work and the queue isn't empty (no blocking)
-        added = False
+        # If pending model request, do not add more work items.
+        # Else enter this (possibly blocking) loop if there's nothing to do (ok to block)
+        #      or if we could accept more work and the queue isn't empty (no blocking)
         while pending_model_request is None and (len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)):
             try:
-                request: QueueRequest|QueueRequestModelChange = await asyncio.wait_for(prompts_queue.get(), 0.5)
+                request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
                 break
             status.update_queue_depths(prompts_queue.qsize())
             
-            if isinstance(request, QueueRequestModelChange):
+            if request.finish_reason:
+                continue
+            
+            if modelfile is None or request.modelfile.repository != modelfile.repository:
                 pending_model_request = request
                 break
             
-            item = WorkItem()
-            
-            chat = ollama_template.Prompt(modelfile).chatString(request.messages)
-            print(chat)
-
-            item.input_ids = tokenizer.encode(chat)
-            item.prompt_tokens = item.input_ids.shape[-1] - 1
-            batch_size = 1
-            max_tokens = request.max_tokens or config.max_seq_len
-            CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
-            item.cache = CacheClass(model, max_seq_len=(item.input_ids.size(1) + max_tokens), batch_size=batch_size)
-            model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
-            item.settings = settings_proto.clone()
-            item.settings.temperature = request.temperature
-            item.settings.top_p = request.top_p
-            item.settings.top_k = request.top_k
-            item.settings.token_repetition_penalty = request.token_repetition_penalty
-            item.settings.token_presence_penalty = request.token_presence_penalty
-            item.settings.token_frequency_penalty = request.token_frequency_penalty
-            item.completion_queue = request.completion_queue
-            item.request = request
-            item.output_ids = torch.empty((1, 0), dtype=torch.long)
-            work.append(item)
+            add_workitem(request)
             added = True
+            
         if added:
             status.update_work_items(len(work))
             print(f"workitems {len(work)}")
@@ -232,6 +244,10 @@ async def inference_loop():
                 if final:
                     finish_reason = "stop" if stopped and not limited else "length"
 
+                if item.request.finish_reason:
+                    final = True
+                    finish_reason = item.request.finish_reason
+                    
                 if final or (item.request.stream and send_chunk):
                     try:
                         content = tokenizer.decode(item.output_ids)[0]
@@ -301,28 +317,46 @@ async def websocket_status(websocket: WebSocket):
 
 
 
+last_queued_modelfile = None
+
 @app.post(
     "/v1/chat/completions",
     response_class=typing.Union[StreamingJSONResponse, JSONResponse],
 )
-async def chat_completions(prompt: ChatCompletions):
-    global modelfile, prompts_queue, config, status, model_change_lock
+async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
+    global modelfile, prompts_queue, config, status, last_queued_modelfile
 
-    if not modelfile or prompt.model != modelfile.repository:
+    # if idle, initialize
+    if prompts_queue.qsize() == 0:
+        last_queued_modelfile = modelfile
+        
+    if not last_queued_modelfile or prompt.model != last_queued_modelfile.repository:
         try:
             newmodelfile = load_modelfile(prompt.model)
         except FileNotFoundError:
             raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
-        await prompts_queue.put(QueueRequestModelChange(modelfile=newmodelfile))
-    
+        last_queued_modelfile = newmodelfile
+        
     # Listify stop
     stop = prompt.stop
     if prompt.stop is None:
         stop = []
     else:
         stop = [stop] if isinstance(stop, str) else stop
-
+    
+    # what a terrible interface Request.is_disconnected() is
+    async def poll_is_disconnected(fastapi_request, request):
+        try:
+            while not request.finish_reason and not await fastapi_request.is_disconnected():
+                await asyncio.sleep(0.5)
+            if not request.finish_reason:
+                print(">> Client disconnected!")
+                request.finish_reason = "disconnected"
+        except asyncio.CancelledError:
+            pass
+            
     request = QueueRequest(
+        modelfile=last_queued_modelfile,
         messages=prompt.messages,
         completion_queue=asyncio.Queue(0),
         max_tokens=prompt.max_tokens,
@@ -339,18 +373,19 @@ async def chat_completions(prompt: ChatCompletions):
     status.update_queue_depths(prompts_queue.qsize())
 
     created = int(time.time())  # constant for all chunks according to api docs
+    asyncio.create_task(poll_is_disconnected(fastapi_request, request))
 
     async def gen():
-        finish_reason = None
-        while finish_reason is None:
+        while request.finish_reason is None:
             try:
                 qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout)
-                finish_reason = qresponse.finish_reason
+                request.finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
+                request.finish_reason = "timeout"
                 raise HTTPException(status_code=504, detail="Processing the prompt timed out.")
             if request.stream:
                 delta = ChatCompletionsChunkResponse.Choice.Delta(content=qresponse.content, role="assistant")
-                choice = ChatCompletionsChunkResponse.Choice(finish_reason=finish_reason, index=1, delta=delta)
+                choice = ChatCompletionsChunkResponse.Choice(finish_reason=request.finish_reason, index=1, delta=delta)
                 response = ChatCompletionsChunkResponse(
                     id=request.request_id,
                     choices=[choice],
@@ -358,15 +393,15 @@ async def chat_completions(prompt: ChatCompletions):
                     model=prompt.model,
                 )
                 # print(".", end="\n" if finish_reason is not None else "")
-                print(qresponse.content, end="\n" if finish_reason is not None else "")
+                print(qresponse.content, end="\n" if request.finish_reason is not None else "")
                 sys.stdout.flush()
                 # print(repr(response))
                 yield response
             else:
-                if finish_reason is None:
+                if request.finish_reason is None:
                     raise HTTPException(status_code=505, detail="Tried to stream non-streaming request")
                 message = ChatCompletionsResponse.Choice.Message(content=qresponse.content, role="assistant")
-                choice = ChatCompletionsResponse.Choice(finish_reason=finish_reason, index=1, message=message)
+                choice = ChatCompletionsResponse.Choice(finish_reason=request.finish_reason, index=1, message=message)
                 usage = ChatCompletionsResponse.Usage(
                     prompt_tokens=qresponse.prompt_tokens,
                     completion_tokens=qresponse.completion_tokens,

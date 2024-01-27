@@ -16,20 +16,26 @@ async def request():
     global client, models
     
     start_time = asyncio.get_event_loop().time()
-    response = await client.chat.completions.create(
-        #model=random.choice(models).id,
-        model=models[0].id, # we always return active model first
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": conversation_prompt},
-        ],
-        max_tokens=2000,
-        n=1,
-        stop=None,
-    )
+    try:
+        response = await client.chat.completions.create(
+            model=random.choice(models).id,
+            #model=models[0].id, # we always return active model first
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": conversation_prompt},
+            ],
+            max_tokens=2000,
+            n=1,
+            stop=None,
+        )
+        content = response.choices[0].message.content
+        tokens = response.usage.completion_tokens
+    except Exception as e:
+        content = repr(e)
+        tokens = 0
     duration = asyncio.get_event_loop().time() - start_time
-    print(f"duration {duration} {response.usage.completion_tokens / duration:.2f} t/s")
-    return response.choices[0].message.content
+    print(f"duration {duration} {tokens / duration:.2f} t/s")
+    return content
 
 async def main():
     global models
