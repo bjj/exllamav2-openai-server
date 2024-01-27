@@ -114,7 +114,7 @@ class QueueRequest(BaseModel):
     request_id: str = f"exllamav2-{next_request_index()}"
     messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
-    max_tokens: int
+    max_tokens: int | None = None
     temperature: float = 0.8
     top_k: int = 50
     top_p: float = 0.8
