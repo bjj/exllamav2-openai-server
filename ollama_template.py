@@ -19,7 +19,7 @@ class ModelFile:
     lora: str = None
     max_seq_len: int = None
     max_input_len: int = None
-    max_batch_size: int = 999
+    max_batch_size: int = None
 
     def __init__(self, repository):
         self.repository = repository

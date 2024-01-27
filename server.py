@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
     parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
-    parser.add_argument("--max-batch-size", metavar="N", type=int, default=8, help="Max prompt batch size")
+    parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
                         help="Sets array gpu_split and accepts input like 16,24",)
     parser.add_argument(
@@ -72,7 +72,7 @@ except FileNotFoundError:
     print(f"Could not load model {args.model}. Try python create_model.py...")
     sys.exit(1)
 
-MAX_PROMPTS = min(args.max_batch_size, modelfile.max_batch_size)
+MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
 
 app = FastAPI()
 

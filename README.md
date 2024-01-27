@@ -8,6 +8,9 @@ This wouldn't be possible without exllamav2 or EricLLM. I saw [EricLLM](https://
 
 ## Usage
 
+* create_model.py
+* arg hierarchy: server args > create args > ollama defaults > model defaults
+
 Example usage for one GPU:
 ```
 python ericLLM.py --model ./models/NeuralHermes-2.5-Mistral-7B-5.0bpw-h6-exl2 --max_prompts 8 --num_workers 2
