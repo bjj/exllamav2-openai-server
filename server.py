@@ -68,6 +68,8 @@ def parse_args():
 
 args = parse_args()
 
+what = torch.inference_mode()
+
 def load_modelfile(repository):
     return ollama_template.ModelFile(repository)
 
@@ -520,7 +522,7 @@ async def load_model():
         model.config.num_hidden_layers = len(layer_arrangement)
         model.last_kv_layer_idx = len(model.modules) - 4
         
-    print("Model is loaded.")
+    print(f"Model is loaded. {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 
 def unload_model():
@@ -535,6 +537,8 @@ def unload_model():
         loras = []
         gc.collect()
         torch.cuda.empty_cache()
+        gc.collect()
+        print(f"After unload, {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 @app.on_event("startup")
 async def startup_event():
