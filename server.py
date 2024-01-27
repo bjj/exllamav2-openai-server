@@ -22,7 +22,7 @@ from exllamav2 import (
     ExLlamaV2Cache_8bit,
     ExLlamaV2Lora,
 )
-from exllamav2.generator import ExLlamaV2BaseGenerator, ExLlamaV2Sampler
+from exllamav2.generator import ExLlamaV2Sampler
 
 
 def parse_args():
@@ -64,7 +64,7 @@ if args.model:
     try:
         modelfile = load_modelfile(args.model)
     except FileNotFoundError:
-        print(f"Could not load model {repository}. Try python create_model.py...")
+        print(f"Could not load model {args.model}. Try python create_model.py...")
         sys.exit(1)
         
 app = FastAPI()
@@ -517,9 +517,6 @@ async def load_model():
     model = ExLlamaV2(config)
     if args.gpu_split:
         global gpu_split
-        if first and args.num_workers > 1:
-            sleep_time = random.uniform(0.1, 3)
-            time.sleep(sleep_time)
         model.load(gpu_split=gpu_split)
     else:
         model.load()
