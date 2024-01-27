@@ -29,7 +29,7 @@ from exllamav2.generator import ExLlamaV2BaseGenerator, ExLlamaV2Sampler
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenAI compatible server for exllamav2.")
     parser.add_argument("--verbose", action="store_true", default=False, help="Sets verbose")
-    parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Sets ollama-style model repository")
+    parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Initial model to load")
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
@@ -37,24 +37,18 @@ def parse_args():
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
     parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
-                        help="Sets array gpu_split and accepts input like 16,24",)
+                        help="Sets array gpu_split and accepts input like 16,24")
     parser.add_argument(
         "--gpu_balance",
         action="store_true",
         default=False,
-        help="Balance workers on GPUs to maximize throughput. Make sure --gpu_split is set to the full memory of all cards.",
+        help="Balance workers on GPUs to maximize throughput. Make sure --gpu_split is set to the full memory of all cards."
     )
-    parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha", )
-    parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale", )
-    parser.add_argument(
-        "--cache_8bit",
-        metavar="CACHE_8BIT",
-        type=bool,
-        default=False,
-        help="Use 8 bit cache (not implemented)",
-    )
+    parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha")
+    parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
+    parser.add_argument("--cache_8bit", action="store_true", help="Use 8 bit cache")
     parser.add_argument("--num_workers", metavar="NUM_WORKERS", type=int,
-                        default=1, help="Number of worker processes to use", )
+                        default=1, help="Number of worker processes to use")
 
     return parser.parse_args()
 
@@ -189,11 +183,8 @@ async def inference_loop():
             item.prompt_tokens = item.input_ids.shape[-1] - 1
             batch_size = 1
             max_tokens = request.max_tokens or config.max_seq_len
-            item.cache = ExLlamaV2Cache(
-                model,
-                max_seq_len=(item.input_ids.size(1) + max_tokens),
-                batch_size=batch_size,
-            )
+            CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
+            item.cache = CacheClass(model, max_seq_len=(item.input_ids.size(1) + max_tokens), batch_size=batch_size)
             model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
             item.settings = settings_proto.clone()
             item.settings.temperature = request.temperature
