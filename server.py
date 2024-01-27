@@ -306,10 +306,13 @@ async def websocket_status(websocket: WebSocket):
     await websocket.accept()
     while True:
         await asyncio.sleep(1)
-        data = [
-            { "x": status.times, "y": status.work_items, "name": "run" },
-            { "x": status.times, "y": status.queue_depths, "name": "wait" },
-        ]
+        data = {
+            "model": modelfile.repository if modelfile else None,
+            "queues": [
+                { "x": status.times, "y": status.work_items, "name": "run" },
+                { "x": status.times, "y": status.queue_depths, "name": "wait" },                
+            ],
+        }
         try:
             await websocket.send_json(data)
         except Exception as e:

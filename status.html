@@ -6,6 +6,7 @@
 </head>
 
 <body>
+    <div id='modelDiv'><h1 id='modelLabel' style="font-style:italic">waiting for status...</h1></div>
     <div id='graphDiv'></div>
     <script type='text/javascript'>
         var layout = {
@@ -58,6 +59,8 @@
             },
         };
 
+        var MODEL_LABEL = document.getElementById('modelLabel');
+
         var GRAPH_DIV = document.getElementById('graphDiv');
         var HOST = window.location.origin.replace(/^http/, 'ws');
         var ws = null;
@@ -67,7 +70,18 @@
             ws = new WebSocket(HOST + "/ws/status");
 
             ws.onmessage = function (event) {
-                var figure = JSON.parse(event.data);
+                var data = JSON.parse(event.data);
+                var model = data['model'];
+                if (model) {
+                    MODEL_LABEL.style="";
+                    MODEL_LABEL.innerHTML=model;
+                }
+                else
+                {
+                    MODEL_LABEL.style="font-style:italic";
+                    MODEL_LABEL.innerHTML="unloaded";
+                }
+                var figure = data['queues'];
                 now = new Date();
                 figure.map((obj) => {
                     obj.x = obj.x.map(x => new Date(x * 1000.0));
