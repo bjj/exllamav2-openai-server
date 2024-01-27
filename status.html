@@ -8,10 +8,6 @@
 <body>
     <div id='graphDiv'></div>
     <script type='text/javascript'>
-        var GRAPH_DIV = document.getElementById('graphDiv');
-        var HOST = window.location.origin.replace(/^http/, 'ws');
-        var ws = new WebSocket(HOST + "/ws/status");
-
         var layout = {
             xaxis: {
                 type: "date",
@@ -62,27 +58,48 @@
             },
         };
 
-        ws.onmessage = function (event) {
-            var figure = JSON.parse(event.data);
-            now = new Date();
-            figure.map((obj) => {
-                obj.x = obj.x.map(x => new Date(x * 1000.0));
-                obj.x.push(now);
-                obj.y.push(obj.y[obj.y.length - 1]);
-                obj.mode = "lines";
-                obj.type = "scatter";
-                obj.line = { "shape": "hv" }; // step plot
-                return obj;
-            });
-            Plotly.newPlot(GRAPH_DIV, figure, layout);
-            xrange = GRAPH_DIV.layout.xaxis.range.map(x => new Date(x));
-            if (Math.abs(now.getTime() - xrange[1].getTime()) < 10 * 1000)
-            {
-                span = xrange[1].getTime() - xrange[0].getTime();
-                range = [new Date(now.getTime() - span), now];
-                Plotly.relayout(GRAPH_DIV, { 'xaxis.range': range })
+        var GRAPH_DIV = document.getElementById('graphDiv');
+        var HOST = window.location.origin.replace(/^http/, 'ws');
+        var ws = null;
+
+        function connectWebsocket() {
+            clearInterval(connectInterval);
+            ws = new WebSocket(HOST + "/ws/status");
+
+            ws.onmessage = function (event) {
+                var figure = JSON.parse(event.data);
+                now = new Date();
+                figure.map((obj) => {
+                    obj.x = obj.x.map(x => new Date(x * 1000.0));
+                    obj.x.push(now);
+                    obj.y.push(obj.y[obj.y.length - 1]);
+                    obj.mode = "lines";
+                    obj.type = "scatter";
+                    obj.line = { "shape": "hv" }; // step plot
+                    return obj;
+                });
+                Plotly.newPlot(GRAPH_DIV, figure, layout);
+                xrange = GRAPH_DIV.layout.xaxis.range.map(x => new Date(x));
+                // need better logic when there are big gaps in data, for now just let me scroll
+                //if (Math.abs(now.getTime() - xrange[1].getTime()) < 10 * 1000) {
+                    span = xrange[1].getTime() - xrange[0].getTime();
+                    range = [new Date(now.getTime() - span), now];
+                    Plotly.relayout(GRAPH_DIV, { 'xaxis.range': range })
+                //}
+            };
+
+            ws.onopen = function (event) {
+                console.log("Connected!");
             }
-        };
+
+            ws.onclose = function (event) {
+                console.log("Closed: ", event);
+                ws = null;
+                clearInterval(connectInterval);
+                connectInterval = setInterval(connectWebsocket, 1 * 1000);
+            };
+        }
+        var connectInterval = setInterval(connectWebsocket, 100);
     </script>
 </body>
 
