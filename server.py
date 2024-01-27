@@ -151,7 +151,7 @@ class WorkItem:
     completion_tokens: int = 0
     prompt_tokens: int = 0
     first_content: bool = True
-
+    output_offset: int = 0
 
 async def inference_loop():
     global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model
@@ -249,6 +249,15 @@ async def inference_loop():
                 if final or (item.request.stream and send_chunk):
                     try:
                         content = tokenizer.decode(item.output_ids)[0]
+                        
+                        # this bullshit is because sentencepiece drops leading spaces,
+                        # so simply clearing item.output_ids fails here with missing spaces.
+                        # instead, we have to decode everything and trim off the already-returned
+                        # bits. Fancier (!?) would be to use a random token to stuff on the front
+                        pos = len(content)
+                        content = content[item.output_offset:]
+                        item.output_offset = pos
+                        
                         if item.first_content:
                             content = content.lstrip()
                             item.first_content = False
@@ -264,7 +273,9 @@ async def inference_loop():
                         eos.insert(0, i)  # Indices of completed prompts
                     else:
                         # reset after sending stream delta
-                        item.output_ids = torch.empty((1, 0), dtype=torch.long)
+                        pass
+                        # see above re: sentencepiece
+                        #item.output_ids = torch.empty((1, 0), dtype=torch.long)
 
             # Remove completed prompts from the list
             for i in eos:
