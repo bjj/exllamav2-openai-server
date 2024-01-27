@@ -1,5 +1,7 @@
 # test files for continue.dev
 junk.*
+# local db
+models.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

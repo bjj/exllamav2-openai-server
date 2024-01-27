@@ -11,13 +11,12 @@ conversation_prompt = (
 
 client = openai.AsyncOpenAI(base_url="http://localhost:8000/v1", api_key=api_key)
 
-
 async def request():
-    global client
+    global client, models
     
     start_time = asyncio.get_event_loop().time()
     response = await client.chat.completions.create(
-        model="bob",
+        model=models[0].id,
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": conversation_prompt},
@@ -31,8 +30,15 @@ async def request():
     return response.choices[0].message.content
 
 async def main():
+    global models
+    
+    # wow this is an annoying interface
+    models = []
+    async for model_page in client.models.list():
+        models.append(model_page)
+    
     requests = []
-    for i in range(20):
+    for i in range(4):
         requests.append(request())
     all = await asyncio.gather(*requests)
     print(all[int(len(all)/2)])

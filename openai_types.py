@@ -76,3 +76,16 @@ class ChatCompletionsChunkResponse(BaseModel):
     
 ChatCompletionsChunkResponse.update_forward_refs()
 ChatCompletionsChunkResponse.Choice.update_forward_refs()
+
+class ModelsResponse(BaseModel):
+    class Model(BaseModel):
+        id: str
+        created: int
+        object: str = "model"
+        onwed_by: str = "hmm"
+        
+    object: str = "list"
+    data: list[ModelsResponse.Model]
+    
+ModelsResponse.update_forward_refs()
+ModelsResponse.Model.update_forward_refs()

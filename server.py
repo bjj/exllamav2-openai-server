@@ -24,14 +24,15 @@ from exllamav2.generator import ExLlamaV2BaseGenerator, ExLlamaV2Sampler
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Command line arguments for a Python script.")
+    parser = argparse.ArgumentParser(description="OpenAI compatible server for exllamav2.")
     parser.add_argument("--verbose", action="store_true", default=False, help="Sets verbose")
-    parser.add_argument("--model", metavar="MODEL_DIRECTORY", type=str, help="Sets model_directory")
-    parser.add_argument("--lora", metavar="LORA_DIRECTORY", type=str, help="Sets lora_directory")
+    parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Sets ollama-style model repository", required=True)
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
-    parser.add_argument("--max-model-len", metavar="MAX_SEQ_LEN", type=int, help="Sets max_seq_len")
-    parser.add_argument("--max-input-len", metavar="MAX_INPUT_LEN", type=int, help="Sets max_input_len")
+    parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
+    parser.add_argument("--max-model-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
+    parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
+    parser.add_argument("--max-batch-size", metavar="N", type=int, default=8, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
                         help="Sets array gpu_split and accepts input like 16,24",)
     parser.add_argument(
@@ -40,9 +41,6 @@ def parse_args():
         default=False,
         help="Balance workers on GPUs to maximize throughput. Make sure --gpu_split is set to the full memory of all cards.",
     )
-    parser.add_argument("--max_prompts", metavar="MAX_PROMPTS", type=int,
-                        default=16, help="Max prompts to process at once", )
-    parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets timeout")
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha", )
     parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale", )
     parser.add_argument(
@@ -66,16 +64,19 @@ def parse_args():
 
 
 args = parse_args()
-print(f"Model Directory: {args.model}")
-# Maximum number of generations to hold in memory before forcing a wait on new requests.
-MAX_PROMPTS = args.max_prompts
+
+try:
+    modelfile = ollama_template.ModelFile(args.model)
+    print(f"Loaded model {args.model}")
+except FileNotFoundError:
+    print(f"Could not load model {args.model}. Try python create_model.py...")
+    sys.exit(1)
+
+MAX_PROMPTS = min(args.max_batch_size, getattr(modelfile.settings, "max_batch_size", 99))
 
 app = FastAPI()
 
-
 request_index = 0
-
-
 def next_request_index():
     global request_index
     request_index += 1
@@ -109,7 +110,6 @@ prompts_queue = asyncio.Queue()
 
 processing_started = False
 model = None
-modelfile = None
 tokenizer = None
 loras = []
 
@@ -259,6 +259,9 @@ def read_root():
 async def chat_completions(prompt: ChatCompletions):
     global modelfile, prompts_queue, token_count, config
 
+    if prompt.model != modelfile.repository:
+        raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available")
+    
     # Listify stop
     stop = prompt.stop
     if prompt.stop is None:
@@ -290,7 +293,8 @@ async def chat_completions(prompt: ChatCompletions):
         finish_reason = None
         while finish_reason is None:
             try:
-                qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout) finish_reason = qresponse.finish_reason
+                qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout)
+                finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
                 raise HTTPException(status_code=504, detail="Processing the prompt timed out.")
             if request.stream:
@@ -315,8 +319,8 @@ async def chat_completions(prompt: ChatCompletions):
                 usage = ChatCompletionsResponse.Usage(
                     prompt_tokens=qresponse.prompt_tokens,
                     completion_tokens=qresponse.completion_tokens,
-                    total_tokens=qresponse.prompt_tokens +
-                    qresponse.completion_tokens)
+                    total_tokens=qresponse.prompt_tokens + qresponse.completion_tokens
+                )
                 response = ChatCompletionsResponse(
                     id=request.request_id,
                     choices=[choice],
@@ -334,24 +338,44 @@ async def chat_completions(prompt: ChatCompletions):
         return JSONResponse(jsonable_encoder(response))
 
 
+@app.get("/v1/models", response_class=JSONResponse)
+async def api_models():
+    models = []
+    models.append(ModelsResponse.Model(id=modelfile.repository, created=modelfile.created))
+    response = ModelsResponse(data=models)
+    return response
+    
+
+
 def setup_model():
     global model, modelfile, tokenizer, loras, config
-    model_directory = args.model
     config = ExLlamaV2Config()
-    config.model_dir = model_directory
+    config.model_dir = modelfile.model_dir
     config.prepare()
     if args.rope_scale is not None:
         config.scale_pos_emb = args.rope_scale
+    elif 'rope_scale' in modelfile.settings:
+        config.scale_pos_emb = modelfile.settings['rope_scale']
+        
     if args.rope_alpha is not None:
         config.scale_rope_alpha = args.rope_alpha
+    elif 'rope_alpha' in modelfile.settings:
+        config.scale_rope_alpha = modelfile.settings['rope_scale']
+        
     if args.max_model_len is not None:
-        config.max_seq_len = args.max_model_len
+        config.max_seq_len = min(args.max_model_len, config.max_seq_len)
+    if 'max_model_len' in modelfile.settings:
+        config.max_seq_len = min(modelfile.settings['max_model_len'], config.max_seq_len)
+        
     if args.max_input_len is not None:
         config.max_input_len = args.max_input_len
-    config.max_batch_size = args.max_prompts
+    if 'max_input_len' in modelfile.settings:
+        config.max_input_len = min(modelfile.settings['max_input_len'], config.max_input_len)
 
-    print("Loading model: " + model_directory)
-    modelfile = ollama_template.ModelFile()  # XXX specific
+    config.max_batch_size = MAX_PROMPTS
+
+    print("Loading model: " + modelfile.repository)
+    print("From: " + config.model_dir)
     model = ExLlamaV2(config)
     if args.gpu_split:
         sleep_time = random.uniform(0.1, 3)
@@ -392,7 +416,7 @@ def setup_model():
         model.load()
     tokenizer = ExLlamaV2Tokenizer(config)
     print("Model is loaded.")
-    if args.lora:
+    if modelfile.lora:
         lora = ExLlamaV2Lora.from_directory(model, args.lora)
         loras.append(lora)
 

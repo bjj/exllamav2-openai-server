@@ -6,24 +6,34 @@ import re
 import typing
 from pydantic import BaseModel
 from openai_types import ChatCompletions
-
-deepseek_coder_template = (
-    "{{ .System }}\n### Instruction:\n{{ .Prompt }}\n### Response:\n"
-)
-deepseek_coder_system_prompt = """
-You are an AI programming assistant, utilizing the Deepseek 
-Coder model, developed by Deepseek Company, and you only answer 
-questions related to computer science. For politically 
-sensitive questions, security and privacy issues, and other 
-non-computer science questions, you will refuse to answer.
-"""
+from create_model import read_registry
 
 
 class ModelFile:
-    template: str = deepseek_coder_template
-    system_prompt: str = deepseek_coder_system_prompt
+    repository: str
+    created: int
+    template: str
+    system_prompt: str = ""
+    model_dir: str
+    settings: dict = {}
+    stop: list[str]
+    lora: str = None
 
-
+    def __init__(self, repository):
+        self.repository = repository
+        registry = read_registry()
+        try:
+            record = registry[repository]
+        except KeyError:
+            raise FileNotFoundError()
+        self.model_dir = record["model_dir"]
+        self.created = record["created"]
+        self.template = record["ollama"]["template"]
+        self.system_prompt = getattr(self.settings, "system_prompt", getattr(record["ollama"], "system", ""))
+        self.settings = record["settings"]
+        self.lora = getattr(self.settings, 'lora', None)
+        self.stop = getattr(record["ollama"], "stop", [])
+        
 class Prompt:
     first: bool = True
     system_prompt: str = ""
@@ -49,6 +59,10 @@ class Prompt:
             subbed = subbed.replace("{{.Response}}", self.response)
         else:
             subbed = subbed + self.response
+
+        # we're not fully text/template compatible by a long shot
+        if '{{' in subbed:
+            raise(f'Incomplete template substitution {template}')
 
         self.first = False
         self.system_prompt = ""

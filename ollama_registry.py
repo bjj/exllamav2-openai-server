@@ -5,10 +5,9 @@ import httpx
 import json
 import copy
 from urllib.parse import urljoin
-import pprint
+import asyncio
 
 async def get_url_of_type(url, mimetype):
-    print(url)
     async with httpx.AsyncClient() as client:
         headers = {
             'Accept': mimetype
@@ -28,19 +27,14 @@ async def get_url_of_type(url, mimetype):
             print(f"Request error: {e}")
             return None
 
-# Example usage
-import asyncio
 
-url = 'https://registry.ollama.ai/v2/library/mistral/manifests/latest'
-
-async def main():
-    pp = pprint.PrettyPrinter(indent=4)
-
+async def get_ollama_model_descriptor(repository, debug=False):
     baseUrl = 'https://registry.ollama.ai/'
     namespace = 'library'
-    repository = sys.argv[1]
     tag = 'latest'
-
+    
+    if '/' in repository:
+        namespace, repository = repository.split('/')
     if ':' in repository:
         repository, tag = repository.split(':')
 
@@ -62,8 +56,6 @@ async def main():
         "application/vnd.docker.container.image.v1+json": "config",
     }
 
-    pp.pprint(manifest)
-
     blobs = copy.deepcopy(manifest['layers'])
     blobs.append(copy.deepcopy(manifest['config']))
 
@@ -72,9 +64,10 @@ async def main():
         if blob['size'] > 2048:
             continue
         url = urljoin(baseUrl, f"v2/{namespace}/{repository}/blobs/{blob['digest']}")
+        if debug:
+            print(url)
         async def fetch(b, u):
             b['body'] = await get_url_of_type(u, b['mediaType'])
-            print(f"gotbody {b['mediaType']}")
         pending.append(fetch(blob, url))
     await asyncio.gather(*pending)
 
@@ -88,8 +81,14 @@ async def main():
         if name in ['params', 'config']:
             body = json.loads(body)
         descr[name] = body
+    return descr
+    
+async def main():
+    repository = sys.argv[1]
 
-    pp.pprint(descr)
-    #blobPath = 'https://registry.ollama.ai/v2/library/mistral/blobs/sha256:ed11eda7790d05b49395598a42b155812b17e263214292f7b87d15e14003d337'
+    descr = await get_ollama_model_descriptor(repository, debug=True)
+    print(json.dumps(descr, indent=4))
+    
+
 if __name__ == "__main__":
     asyncio.run(main())
