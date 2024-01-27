@@ -3,6 +3,13 @@ An implementation of the OpenAI API using the exllama2 backend. It supports batc
 
 This wouldn't be possible without exllamav2 or EricLLM. I saw [EricLLM](https://github.com/epolewski/EricLLM) and thought it was already doing what this package does, and my disappointment kickstarted me into writing this code.
 
+supports:
+* OpenAI API `/v1/models`, `/v1/chat/completions`
+* continuous batching
+* streaming responses
+* dynamic model loading
+* import of ollama configs (bring your own exl2)
+
 ## Installation
 
 

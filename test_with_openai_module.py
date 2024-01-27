@@ -1,5 +1,6 @@
 import openai
 import asyncio
+import random
 
 # Set your OpenAI API key here
 api_key = "YOUR_API_KEY"
@@ -16,7 +17,8 @@ async def request():
     
     start_time = asyncio.get_event_loop().time()
     response = await client.chat.completions.create(
-        model=models[0].id,
+        #model=random.choice(models).id,
+        model=models[0].id, # we always return active model first
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": conversation_prompt},
@@ -38,7 +40,7 @@ async def main():
         models.append(model_page)
     
     requests = []
-    for i in range(4):
+    for i in range(20):
         requests.append(request())
     all = await asyncio.gather(*requests)
     print(all[int(len(all)/2)])

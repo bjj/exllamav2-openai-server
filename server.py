@@ -1,4 +1,4 @@
-import sys, os, time, torch, random, asyncio, json, argparse, pathlib
+import sys, os, time, torch, random, asyncio, json, argparse, pathlib, gc
 import typing
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from openai_types import *
 from fastapi_helpers import StreamingJSONResponse
 import ollama_template
+from create_model import read_registry
 
 # Run exllamav2 from a git checkout in a sibling dir
 sys.path.append(
@@ -28,7 +29,7 @@ from exllamav2.generator import ExLlamaV2BaseGenerator, ExLlamaV2Sampler
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenAI compatible server for exllamav2.")
     parser.add_argument("--verbose", action="store_true", default=False, help="Sets verbose")
-    parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Sets ollama-style model repository", required=True)
+    parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Sets ollama-style model repository")
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
@@ -67,20 +68,17 @@ def parse_args():
 
 args = parse_args()
 
-def select_model(repository):
-    global modelfile, MAX_PROMPTS, args
-    
+def load_modelfile(repository):
+    return ollama_template.ModelFile(repository)
+
+modelfile = None
+if args.model:
     try:
-        modelfile = ollama_template.ModelFile(repository)
-        print(f"Loaded model {repository}")
+        modelfile = load_modelfile(args.model)
     except FileNotFoundError:
         print(f"Could not load model {repository}. Try python create_model.py...")
         sys.exit(1)
-
-    MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
-
-select_model(args.model)
-
+        
 app = FastAPI()
 
 request_index = 0
@@ -109,10 +107,12 @@ class ServerStatus:
 
 status = ServerStatus()
 
-# Globals to store states
+class QueueRequestModelChange(BaseModel):
+    modelfile: typing.Any
+    
 class QueueRequest(BaseModel):
     request_id: str = f"exllamav2-{next_request_index()}"
-    ids: typing.Any
+    messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
     max_tokens: int
     temperature: float = 0.8
@@ -154,33 +154,50 @@ class WorkItem:
 
 
 async def inference_loop():
-    global prompts_queue, processing_started, status, settings_proto
+    global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model
     processing_started = True
 
     # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
     chunk_interval = 0.1
     next_stream_time = asyncio.get_event_loop().time() + chunk_interval
+    
+    pending_model_request = None
 
     work: list[WorkItem] = []
 
     while processing_started:
+        if pending_model_request and not work:
+            modelfile = pending_model_request.modelfile
+            await load_model()
+            pending_model_request = None
+
         # enter this (possibly blocking) loop if there's nothing to do (ok to block)
         # or if we could accept more work and the queue isn't empty (no blocking)
+        could_batch_more = len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)
         added = False
-        while len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0):
+        while could_batch_more and pending_model_request is None:
             try:
-                request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
+                request: QueueRequest|QueueRequestModelChange = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
                 break
             status.update_queue_depths(prompts_queue.qsize())
             
+            if isinstance(request, QueueRequestModelChange):
+                pending_model_request = request
+                break
+            
             item = WorkItem()
-            item.input_ids = request.ids
-            item.prompt_tokens = request.ids.shape[-1] - 1
+            
+            chat = ollama_template.Prompt(modelfile).chatString(request.messages)
+            print(chat)
+
+            item.input_ids = tokenizer.encode(chat)
+            item.prompt_tokens = item.input_ids.shape[-1] - 1
             batch_size = 1
+            max_tokens = request.max_tokens or config.max_seq_len
             item.cache = ExLlamaV2Cache(
                 model,
-                max_seq_len=(request.ids.size(1) + request.max_tokens),
+                max_seq_len=(item.input_ids.size(1) + max_tokens),
                 batch_size=batch_size,
             )
             model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
@@ -230,7 +247,7 @@ async def inference_loop():
                 if final:
                     finish_reason = "stop" if stopped and not limited else "length"
 
-                if final or (request.stream and send_chunk):
+                if final or (item.request.stream and send_chunk):
                     try:
                         content = tokenizer.decode(item.output_ids)[0]
                         if item.first_content:
@@ -253,7 +270,7 @@ async def inference_loop():
             # Remove completed prompts from the list
             for i in eos:
                 work.pop(i)
-            if eos and prompts_queue.qsize() == 0:
+            if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
                 print(f"workitems {len(work)}")
                 status.update_work_items(len(work))
 
@@ -286,6 +303,8 @@ async def websocket_status(websocket: WebSocket):
         except Exception as e:
             break
 
+
+
 @app.post(
     "/v1/chat/completions",
     response_class=typing.Union[StreamingJSONResponse, JSONResponse],
@@ -293,8 +312,12 @@ async def websocket_status(websocket: WebSocket):
 async def chat_completions(prompt: ChatCompletions):
     global modelfile, prompts_queue, config, status, model_change_lock
 
-    if prompt.model != modelfile.repository:
-        raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
+    if not modelfile or prompt.model != modelfile.repository:
+        try:
+            newmodelfile = load_modelfile(prompt.model)
+        except FileNotFoundError:
+            raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
+        await prompts_queue.put(QueueRequestModelChange(modelfile=newmodelfile))
     
     # Listify stop
     stop = prompt.stop
@@ -303,13 +326,10 @@ async def chat_completions(prompt: ChatCompletions):
     else:
         stop = [stop] if isinstance(stop, str) else stop
 
-    chat = ollama_template.Prompt(modelfile).chatString(prompt.messages)
-    print(chat)
-
     request = QueueRequest(
-        ids=tokenizer.encode(chat),
+        messages=prompt.messages,
         completion_queue=asyncio.Queue(0),
-        max_tokens=prompt.max_tokens or config.max_seq_len,
+        max_tokens=prompt.max_tokens,
         temperature=prompt.temperature,
         top_p=prompt.top_p,
         token_repetition_penalty=1.05,
@@ -375,8 +395,15 @@ async def chat_completions(prompt: ChatCompletions):
 
 @app.get("/v1/models", response_class=JSONResponse)
 async def api_models():
+    registry = read_registry()
     models = []
-    models.append(ModelsResponse.Model(id=modelfile.repository, created=modelfile.created))
+    # make active model first
+    if modelfile:
+        models.append(ModelsResponse.Model(id=modelfile.repository, created=modelfile.created))
+    for k, v in registry.items():
+        if modelfile and modelfile.repository == k:
+            continue
+        models.append(ModelsResponse.Model(id=k, created=v["created"]))
     response = ModelsResponse(data=models)
     return response
     
@@ -387,6 +414,7 @@ async def setup_gpu_split():
         gpu_split = list(map(int, args.gpu_split.split(",")))
         return
     
+    print("Reading gpu_split...")
     while os.path.exists("gpu_assign.lock"):
         await asyncio.sleep(0.3)
     with open("gpu_assign.lock", "w", encoding="utf-8") as file:
@@ -416,8 +444,15 @@ async def setup_gpu_split():
     gpu_split = list(map(int, first_line.split(",")))
 
 
-def load_model(first = False):
-    global model, modelfile, tokenizer, loras, config
+async def load_model():
+    global model, modelfile, tokenizer, loras, config, MAX_PROMPTS
+    
+    unload_model()
+    
+    print("Loading model: " + modelfile.repository)
+    print("From: " + modelfile.model_dir)
+    
+    MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
     
     config = ExLlamaV2Config()
     config.model_dir = modelfile.model_dir
@@ -445,8 +480,6 @@ def load_model(first = False):
         
     config.max_batch_size = MAX_PROMPTS
 
-    print("Loading model: " + modelfile.repository)
-    print("From: " + config.model_dir)
     model = ExLlamaV2(config)
     if args.gpu_split:
         global gpu_split
@@ -482,19 +515,28 @@ def load_model(first = False):
 
 def unload_model():
     global model, config, tokenizer, loras
-    model.unload()
-    model = None
-    config = None
-    tokenizer = None
-    for lora in loras:
-        lora.unload()
-    loras = []
+    if model:
+        model.unload()
+        model = None
+        config = None
+        tokenizer = None
+        for lora in loras:
+            lora.unload()
+        loras = []
+        gc.collect()
+        torch.cuda.empty_cache()
 
 @app.on_event("startup")
 async def startup_event():
+    global args, modelfile
+    
     print("Starting up...")
-    setup_gpu_split()
-    load_model(True)
+    if args.gpu_split:
+        await setup_gpu_split()
+    if modelfile:
+        if args.gpu_split and args.num_workers > 1:
+            await asyncio.sleep(random.uniform(0.1, 3))
+        await load_model()
     asyncio.create_task(inference_loop())
 
 
