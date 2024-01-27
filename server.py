@@ -47,13 +47,6 @@ def parse_args():
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha", )
     parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale", )
     parser.add_argument(
-        "--embiggen",
-        metavar="embiggen",
-        type=int,
-        default=0,
-        help="Duplicates some attention layers this many times to make larger frankenmodels dynamically. May increase cromulence on benchmarks.",
-    )
-    parser.add_argument(
         "--cache_8bit",
         metavar="CACHE_8BIT",
         type=bool,
@@ -505,22 +498,6 @@ async def load_model():
     if modelfile.lora:
         lora = ExLlamaV2Lora.from_directory(model, args.lora)
         loras.append(lora)
-
-    # Embiggen the model x times without increasing memory usage
-    for i in range(args.embiggen):
-        # mix layers here
-        layer_arrangement = list(range(0, 14)) + list(range(4, 22))
-        # list(range(8, 18)) +
-        # modules arangement: [embedding, [...layers], rms-norm, head]
-        # where each layer is [attention, mlp]
-        old_modules = model.modules
-        model.modules = old_modules[:1]
-        for idx in layer_arrangement:
-            model.modules += old_modules[idx * 2 + 1: idx * 2 + 3]
-        model.modules += old_modules[-2:]
-        model.head_layer_idx = len(model.modules) - 1
-        model.config.num_hidden_layers = len(layer_arrangement)
-        model.last_kv_layer_idx = len(model.modules) - 4
         
     print(f"Model is loaded. {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
