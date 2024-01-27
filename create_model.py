@@ -22,7 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Add a model description.")
     parser.add_argument("--model-dir", metavar="MODEL_DIRECTORY", type=str, help="Sets model_directory", required=True)
     parser.add_argument("--lora", metavar="LORA_DIRECTORY", type=str, help="Sets lora_directory")
-    parser.add_argument("--max-model-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
+    parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
     parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompts to process at once")
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, help="Sets rope_alpha")

@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
-    parser.add_argument("--max-model-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
+    parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
     parser.add_argument("--max-batch-size", metavar="N", type=int, default=8, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
@@ -72,7 +72,7 @@ except FileNotFoundError:
     print(f"Could not load model {args.model}. Try python create_model.py...")
     sys.exit(1)
 
-MAX_PROMPTS = min(args.max_batch_size, getattr(modelfile.settings, "max_batch_size", 99))
+MAX_PROMPTS = min(args.max_batch_size, modelfile.max_batch_size)
 
 app = FastAPI()
 
@@ -354,24 +354,24 @@ def setup_model():
     config.prepare()
     if args.rope_scale is not None:
         config.scale_pos_emb = args.rope_scale
-    elif 'rope_scale' in modelfile.settings:
-        config.scale_pos_emb = modelfile.settings['rope_scale']
+    elif hasattr(modelfile, 'rope_scale'):
+        config.scale_pos_emb = modelfile.rope_scale
         
     if args.rope_alpha is not None:
         config.scale_rope_alpha = args.rope_alpha
-    elif 'rope_alpha' in modelfile.settings:
-        config.scale_rope_alpha = modelfile.settings['rope_scale']
+    elif hasattr(modelfile, 'rope_alpha'):
+        config.scale_rope_alpha = modelfile.rope_alpha
+    
+    if modelfile.max_seq_len:
+        config.max_seq_len = modelfile.max_seq_len
+    if args.max_seq_len:
+        config.max_seq_len = args.max_seq_len
         
-    if args.max_model_len is not None:
-        config.max_seq_len = min(args.max_model_len, config.max_seq_len)
-    if 'max_model_len' in modelfile.settings:
-        config.max_seq_len = min(modelfile.settings['max_model_len'], config.max_seq_len)
-        
-    if args.max_input_len is not None:
+    if modelfile.max_input_len:
+        config.max_input_len = modelfile.max_input_len
+    if args.max_input_len:
         config.max_input_len = args.max_input_len
-    if 'max_input_len' in modelfile.settings:
-        config.max_input_len = min(modelfile.settings['max_input_len'], config.max_input_len)
-
+        
     config.max_batch_size = MAX_PROMPTS
 
     print("Loading model: " + modelfile.repository)

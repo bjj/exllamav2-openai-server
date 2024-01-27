@@ -15,9 +15,11 @@ class ModelFile:
     template: str
     system_prompt: str = ""
     model_dir: str
-    settings: dict = {}
-    stop: list[str]
+    stop: list[str] = []
     lora: str = None
+    max_seq_len: int = None
+    max_input_len: int = None
+    max_batch_size: int = 999
 
     def __init__(self, repository):
         self.repository = repository
@@ -28,11 +30,18 @@ class ModelFile:
             raise FileNotFoundError()
         self.model_dir = record["model_dir"]
         self.created = record["created"]
-        self.template = record["ollama"]["template"]
-        self.system_prompt = getattr(self.settings, "system_prompt", getattr(record["ollama"], "system", ""))
-        self.settings = record["settings"]
-        self.lora = getattr(self.settings, 'lora', None)
-        self.stop = getattr(record["ollama"], "stop", [])
+        
+        # defaults from ollama
+        ollama = record.get("ollama", {})
+        ollama_params = ollama.get("params", {})
+        self.template = ollama["template"]
+        self.system_prompt = ollama.get("system", "")
+        self.max_seq_len = ollama_params.get("num_ctx", None)
+        self.stop = ollama_params.get("stop", [])
+
+        # override with command line settings from create_model.py
+        for k, v in record["settings"].items():
+            setattr(self, k, v)
         
 class Prompt:
     first: bool = True
