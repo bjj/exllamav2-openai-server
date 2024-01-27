@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
+</head>
+
+<body>
+    <div id='graphDiv'></div>
+    <script type='text/javascript'>
+        var GRAPH_DIV = document.getElementById('graphDiv');
+        var HOST = window.location.origin.replace(/^http/, 'ws');
+        var ws = new WebSocket(HOST + "/ws/status");
+
+        var layout = {
+            xaxis: {
+                type: "date",
+                tickformatstops: [
+                    {
+                        dtickrange: [null, 60000],
+                        value: "%M:%S"
+                    },
+                    {
+                        dtickrange: [60000, 3600000],
+                        value: "%H:%M:%S"
+                    },
+                    {
+                        dtickrange: [3600000, null],
+                        value: "%e. %b"
+                    }
+                ],
+                rangeselector: {
+                    buttons: [
+                        {
+                            count: 1,
+                            label: '1m',
+                            step: 'minute',
+                            stepmode: 'backward'
+                        },
+                        {
+                            count: 5,
+                            label: '5m',
+                            step: 'minute',
+                            stepmode: 'backward'
+                        },
+                        {
+                            count: 10,
+                            label: '10m',
+                            step: 'minute',
+                            stepmode: 'backward'
+                        },
+                        { step: 'all' }
+                    ]
+                },
+                showgrid: true,
+                type: 'date'
+            },
+            yaxis: {
+                title: 'Count',
+                rangemode: 'tozero',
+                autorange: true,
+            },
+        };
+
+        ws.onmessage = function (event) {
+            var figure = JSON.parse(event.data);
+            now = new Date();
+            figure.map((obj) => {
+                obj.x = obj.x.map(x => new Date(x * 1000.0));
+                obj.x.push(now);
+                obj.y.push(obj.y[obj.y.length - 1]);
+                obj.mode = "lines";
+                obj.type = "scatter";
+                obj.line = { "shape": "hv" }; // step plot
+                return obj;
+            });
+            Plotly.newPlot(GRAPH_DIV, figure, layout);
+            xrange = GRAPH_DIV.layout.xaxis.range.map(x => new Date(x));
+            if (Math.abs(now.getTime() - xrange[1].getTime()) < 10 * 1000)
+            {
+                span = xrange[1].getTime() - xrange[0].getTime();
+                range = [new Date(now.getTime() - span), now];
+                Plotly.relayout(GRAPH_DIV, { 'xaxis.range': range })
+            }
+        };
+    </script>
+</body>
+
+</html>

@@ -1,8 +1,10 @@
-import sys, os, time, torch, random, asyncio, json, argparse
+import sys, os, time, torch, random, asyncio, json, argparse, pathlib
 import typing
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import JSONResponse
+from starlette.websockets import WebSocket
+from fastapi.exceptions import WebSocketException
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.encoders import jsonable_encoder
 from openai_types import *
 from fastapi_helpers import StreamingJSONResponse
@@ -83,6 +85,25 @@ def next_request_index():
     return request_index
 
 
+class ServerStatus:
+    work_items: list[int] = [0]
+    queue_depths: list[int] = [0]
+    times: list[float] = [time.time()]
+
+    def update_work_items(self, n):
+        if n != self.work_items[-1]:
+            self.times.append(time.time())
+            self.work_items.append(n)
+            self.queue_depths.append(self.queue_depths[-1])
+
+    def update_queue_depths(self, n):
+        if n != self.queue_depths[-1]:
+            self.times.append(time.time())
+            self.queue_depths.append(n)
+            self.work_items.append(self.work_items[-1])
+
+status = ServerStatus()
+
 # Globals to store states
 class QueueRequest(BaseModel):
     request_id: str = f"exllamav2-{next_request_index()}"
@@ -127,7 +148,7 @@ class WorkItem:
 
 
 async def inference_loop():
-    global prompts_queue, processing_started
+    global prompts_queue, processing_started, status
     processing_started = True
 
     settings_proto = ExLlamaV2Sampler.Settings()
@@ -147,6 +168,8 @@ async def inference_loop():
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
                 break
+            status.update_queue_depths(prompts_queue.qsize())
+            
             item = WorkItem()
             item.input_ids = request.ids
             item.prompt_tokens = request.ids.shape[-1] - 1
@@ -170,6 +193,7 @@ async def inference_loop():
             work.append(item)
             added = True
         if added:
+            status.update_work_items(len(work))
             print(f"workitems {len(work)}")
 
         # process as long as there are incomplete requests
@@ -227,6 +251,7 @@ async def inference_loop():
                 work.pop(i)
             if eos and prompts_queue.qsize() == 0:
                 print(f"workitems {len(work)}")
+                status.update_work_items(len(work))
 
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
             await asyncio.sleep(0)
@@ -247,17 +272,37 @@ async def inference_loop():
         # token_processing_start_time = None  # Reset the start time
 
 
-@app.get("/")
-def read_root():
-    return {"message": "ExLlamaV2 Language Model API is running."}
+@app.get("/", response_class=typing.Union[HTMLResponse, FileResponse])
+def status_page():
+    file_path = pathlib.Path('status.html')
 
+    if file_path.exists():
+        return FileResponse(file_path.resolve(), media_type='text/html')
+    else:
+        return HTMLResponse(f"Server is running model {modelfile.repository} but status.html is missing")
+
+@app.websocket("/ws/status")
+async def websocket_status(websocket: WebSocket):
+    global status
+    
+    await websocket.accept()
+    while True:
+        await asyncio.sleep(1)
+        data = [
+            { "x": status.times, "y": status.work_items, "name": "run" },
+            { "x": status.times, "y": status.queue_depths, "name": "wait" },
+        ]
+        try:
+            await websocket.send_json(data)
+        except WebSocketException as e:
+            break
 
 @app.post(
     "/v1/chat/completions",
     response_class=typing.Union[StreamingJSONResponse, JSONResponse],
 )
 async def chat_completions(prompt: ChatCompletions):
-    global modelfile, prompts_queue, token_count, config
+    global modelfile, prompts_queue, config, status
 
     if prompt.model != modelfile.repository:
         raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available")
@@ -286,6 +331,7 @@ async def chat_completions(prompt: ChatCompletions):
     )
 
     await prompts_queue.put(request)
+    status.update_queue_depths(prompts_queue.qsize())
 
     created = int(time.time())  # constant for all chunks according to api docs
 
@@ -328,7 +374,7 @@ async def chat_completions(prompt: ChatCompletions):
                     model=prompt.model,
                     usage=usage,
                 )
-                print(repr(response))
+                #print(repr(response))
                 yield response
 
     if request.stream:
