@@ -67,14 +67,19 @@ def parse_args():
 
 args = parse_args()
 
-try:
-    modelfile = ollama_template.ModelFile(args.model)
-    print(f"Loaded model {args.model}")
-except FileNotFoundError:
-    print(f"Could not load model {args.model}. Try python create_model.py...")
-    sys.exit(1)
+def select_model(repository):
+    global modelfile, MAX_PROMPTS, args
+    
+    try:
+        modelfile = ollama_template.ModelFile(repository)
+        print(f"Loaded model {repository}")
+    except FileNotFoundError:
+        print(f"Could not load model {repository}. Try python create_model.py...")
+        sys.exit(1)
 
-MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
+    MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
+
+select_model(args.model)
 
 app = FastAPI()
 
@@ -133,6 +138,7 @@ processing_started = False
 model = None
 tokenizer = None
 loras = []
+settings_proto = ExLlamaV2Sampler.Settings()
 
 
 class WorkItem:
@@ -148,10 +154,8 @@ class WorkItem:
 
 
 async def inference_loop():
-    global prompts_queue, processing_started, status
+    global prompts_queue, processing_started, status, settings_proto
     processing_started = True
-
-    settings_proto = ExLlamaV2Sampler.Settings()
 
     # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
     chunk_interval = 0.1
@@ -256,21 +260,6 @@ async def inference_loop():
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
             await asyncio.sleep(0)
 
-        #current_time = time.time()
-        #time_elapsed_seconds = current_time - token_processing_start_time
-        #total_processing_time += time_elapsed_seconds
-        #read_speed = token_count["read_tokens"] / time_elapsed_seconds
-        #generation_speed = token_count["gen_tokens"] / time_elapsed_seconds
-        #average_gen_speed = token_count["total_tokens"] / total_processing_time
-#
-        # Log stats to the console
-        # print(
-        #    f"Batch process done. Read {token_count['read_tokens']} tokens at {read_speed:.2f} tokens/s. "
-        #    f"Generated {token_count['gen_tokens']} tokens at {generation_speed:.2f} tokens/s.\n"
-        #    f"This thread generated a total of {token_count['total_tokens']} tokens at {average_gen_speed:.2f} tokens/s."
-        # )
-        # token_processing_start_time = None  # Reset the start time
-
 
 @app.get("/", response_class=typing.Union[HTMLResponse, FileResponse])
 def status_page():
@@ -294,7 +283,7 @@ async def websocket_status(websocket: WebSocket):
         ]
         try:
             await websocket.send_json(data)
-        except WebSocketException as e:
+        except Exception as e:
             break
 
 @app.post(
@@ -302,10 +291,10 @@ async def websocket_status(websocket: WebSocket):
     response_class=typing.Union[StreamingJSONResponse, JSONResponse],
 )
 async def chat_completions(prompt: ChatCompletions):
-    global modelfile, prompts_queue, config, status
+    global modelfile, prompts_queue, config, status, model_change_lock
 
     if prompt.model != modelfile.repository:
-        raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available")
+        raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
     
     # Listify stop
     stop = prompt.stop
@@ -392,12 +381,48 @@ async def api_models():
     return response
     
 
+async def setup_gpu_split():
+    global gpu_split
+    if not args.gpu_balance:
+        gpu_split = list(map(int, args.gpu_split.split(",")))
+        return
+    
+    while os.path.exists("gpu_assign.lock"):
+        await asyncio.sleep(0.3)
+    with open("gpu_assign.lock", "w", encoding="utf-8") as file:
+        file.write("")
+    # Read the first line, remove it, and write the rest back to the file
+    with open("gpu_assign", "r+", encoding="utf-8") as file:
+        # Read the first line
+        first_line = file.readline().replace("\n", "")
 
-def setup_model():
+        # Read the rest of the file
+        rest_of_content = file.read()
+
+        # Move the cursor to the beginning of the file
+        file.seek(0)
+
+        # Write the rest of the content back to the file
+        file.write(rest_of_content)
+
+        # Truncate the file to remove any remaining characters from the old content
+        file.truncate()
+        print(first_line)
+    try:
+        os.remove("gpu_assign.lock")
+    except OSError as e:
+        print(f"Error removing lock: {e}")
+
+    gpu_split = list(map(int, first_line.split(",")))
+
+
+def load_model(first = False):
     global model, modelfile, tokenizer, loras, config
+    
     config = ExLlamaV2Config()
     config.model_dir = modelfile.model_dir
     config.prepare()
+    
     if args.rope_scale is not None:
         config.scale_pos_emb = args.rope_scale
     elif hasattr(modelfile, 'rope_scale'):
@@ -424,44 +449,14 @@ def setup_model():
     print("From: " + config.model_dir)
     model = ExLlamaV2(config)
     if args.gpu_split:
-        sleep_time = random.uniform(0.1, 3)
-        time.sleep(sleep_time)
-        if args.gpu_balance:
-            while os.path.exists("gpu_assign.lock"):
-                time.sleep(0.3)
-            with open("gpu_assign.lock", "w", encoding="utf-8") as file:
-                file.write("")
-            # Read the first line, remove it, and write the rest back to the file
-            with open("gpu_assign", "r+", encoding="utf-8") as file:
-                # Read the first line
-                first_line = file.readline().replace("\n", "")
-
-                # Read the rest of the file
-                rest_of_content = file.read()
-
-                # Move the cursor to the beginning of the file
-                file.seek(0)
-
-                # Write the rest of the content back to the file
-                file.write(rest_of_content)
-
-                # Truncate the file to remove any remaining characters from the old content
-                file.truncate()
-                print(first_line)
-            try:
-                os.remove("gpu_assign.lock")
-            except OSError as e:
-                print(f"Error removing lock: {e}")
-
-            gpus = list(map(int, first_line.split(",")))
-
-        else:
-            gpus = list(map(int, args.gpu_split.split(",")))
-        model.load(gpu_split=gpus)
+        global gpu_split
+        if first and args.num_workers > 1:
+            sleep_time = random.uniform(0.1, 3)
+            time.sleep(sleep_time)
+        model.load(gpu_split=gpu_split)
     else:
         model.load()
     tokenizer = ExLlamaV2Tokenizer(config)
-    print("Model is loaded.")
     if modelfile.lora:
         lora = ExLlamaV2Lora.from_directory(model, args.lora)
         loras.append(lora)
@@ -481,20 +476,34 @@ def setup_model():
         model.head_layer_idx = len(model.modules) - 1
         model.config.num_hidden_layers = len(layer_arrangement)
         model.last_kv_layer_idx = len(model.modules) - 4
+        
+    print("Model is loaded.")
 
+
+def unload_model():
+    global model, config, tokenizer, loras
+    model.unload()
+    model = None
+    config = None
+    tokenizer = None
+    for lora in loras:
+        lora.unload()
+    loras = []
 
 @app.on_event("startup")
 async def startup_event():
     print("Starting up...")
-    setup_model()
+    setup_gpu_split()
+    load_model(True)
     asyncio.create_task(inference_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global processing_started
-    processing_started = False
     print("Shutting down...")
+    processing_started = False
+    unload_model()
 
 
 if __name__ == "__main__":
