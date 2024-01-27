@@ -173,9 +173,8 @@ async def inference_loop():
 
         # enter this (possibly blocking) loop if there's nothing to do (ok to block)
         # or if we could accept more work and the queue isn't empty (no blocking)
-        could_batch_more = len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)
         added = False
-        while could_batch_more and pending_model_request is None:
+        while pending_model_request is None and (len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)):
             try:
                 request: QueueRequest|QueueRequestModelChange = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
@@ -445,7 +444,7 @@ async def setup_gpu_split():
 
 
 async def load_model():
-    global model, modelfile, tokenizer, loras, config, MAX_PROMPTS
+    global args, model, modelfile, tokenizer, loras, config, MAX_PROMPTS
     
     unload_model()
     
