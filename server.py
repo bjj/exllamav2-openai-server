@@ -11,9 +11,10 @@ import ollama_template
 from create_model import read_registry
 
 # Run exllamav2 from a git checkout in a sibling dir
-sys.path.append(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/exllamav2"
-)
+#sys.path.append(
+#    os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/exllamav2"
+#)
+
 from exllamav2 import (
     ExLlamaV2,
     ExLlamaV2Config,
