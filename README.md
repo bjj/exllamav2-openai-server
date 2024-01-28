@@ -11,6 +11,7 @@ supports:
 * import of ollama configs (bring your own exl2)
 * works with continue.dev, ollama webui, openai python module
 * can't vouch for multi-gpu because my other gpu hasn't arrived
+* does not limit input to context length or slide input when reaching context len
 
 ## Installation
 
