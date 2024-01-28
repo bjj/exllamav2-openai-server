@@ -2,7 +2,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 import typing, json
 
-
+# Helper that takes a stream of objects and streams using "Server-sent events"
 SyncJsonStream = typing.Iterator[typing.Any]
 AsyncJsonStream = typing.AsyncIterable[typing.Any]
 JsonStream = typing.Union[AsyncJsonStream, SyncJsonStream]
