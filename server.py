@@ -342,6 +342,9 @@ async def inference_loop():
             # Remove completed prompts from the list
             for i in eos:
                 work.pop(i)
+            if eos:
+                gc.collect()
+                torch.cuda.empty_cache()
             if not work and prompts_queue.qsize() == 0:
                 update_token_rates(True)
             if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
