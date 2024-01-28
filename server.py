@@ -22,7 +22,7 @@ from exllamav2 import (
     ExLlamaV2Cache_8bit,
     ExLlamaV2Lora,
 )
-from exllamav2.generator import ExLlamaV2Sampler
+from exllamav2.generator import ExLlamaV2Sampler, ExLlamaV2StreamingGenerator
 
 
 def parse_args():
@@ -127,9 +127,32 @@ loras = []
 settings_proto = ExLlamaV2Sampler.Settings()
 
 
+# We need the power of ExLlamaV2StreamingGenerator but we want to
+# batch, so we replace the actual inference in this inner function.
+# Ideally refactor exllamav2 so this is not necessary
+def patch_gen_single_token(sampler):
+    def _gen_single_token(self, gen_settings, prefix_token = None):
+        if self.draft_model is not None:
+            raise NotImplementedError
+        
+        logits = self.logits_queue.pop(0)
+        token, _, eos = ExLlamaV2Sampler.sample(logits, gen_settings, self.sequence_ids[:1, :], random.random(), self.tokenizer, prefix_token)
+
+        if self.sequence_ids.shape[0] > 1 and token.shape[0] == 1:
+            self.sequence_ids = torch.cat([self.sequence_ids, token.repeat(self.sequence_ids.shape[0], 1)], dim = 1)
+        else:
+            self.sequence_ids = torch.cat([self.sequence_ids, token], dim = 1)
+
+        gen_settings.feed_filters(token)
+        return token, eos
+    
+    sampler.logits_queue = []
+    sampler._gen_single_token = _gen_single_token.__get__(sampler, ExLlamaV2StreamingGenerator)
+
+    
 class WorkItem:
-    input_ids: list
-    output_ids: list
+    generator: any
+    output_str: str = ""
     cache: any
     settings: any
     completion_queue: any
@@ -137,7 +160,6 @@ class WorkItem:
     completion_tokens: int = 0
     prompt_tokens: int = 0
     first_content: bool = True
-    output_offset: int = 0
 
 async def inference_loop():
     global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model
@@ -160,13 +182,15 @@ async def inference_loop():
         chat = ollama_template.Prompt(modelfile).chatString(request.messages)
         #print(chat)
 
-        item.input_ids = tokenizer.encode(chat)
-        item.prompt_tokens = item.input_ids.shape[-1] - 1
+        input_ids = tokenizer.encode(chat)
+        item.prompt_tokens = input_ids.shape[-1] - 1
         batch_size = 1
         max_tokens = request.max_tokens or config.max_seq_len
         CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
-        item.cache = CacheClass(model, max_seq_len=(item.input_ids.size(1) + max_tokens), batch_size=batch_size)
-        model.forward(item.input_ids[:, :-1], item.cache, preprocess_only=True)
+        item.cache = CacheClass(model, max_seq_len=(input_ids.size(1) + max_tokens), batch_size=batch_size)
+        item.generator = ExLlamaV2StreamingGenerator(model, item.cache, tokenizer)
+        item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop])
+        patch_gen_single_token(item.generator)
         item.settings = settings_proto.clone()
         item.settings.temperature = request.temperature
         item.settings.top_p = request.top_p
@@ -176,7 +200,8 @@ async def inference_loop():
         item.settings.token_frequency_penalty = request.token_frequency_penalty
         item.completion_queue = request.completion_queue
         item.request = request
-        item.output_ids = torch.empty((1, 0), dtype=torch.long)
+        token_healing_must_be_false = False # see below
+        item.generator.begin_stream(input_ids, item.settings, loras=loras, token_healing=token_healing_must_be_false)
         work.append(item)
         
     while processing_started:
@@ -222,23 +247,27 @@ async def inference_loop():
                 next_stream_time = now + chunk_interval
                 send_chunk = True
 
-            inputs = torch.cat([w.input_ids[:, -1:] for w in work], dim=0)
+            inputs = torch.cat([w.generator.sequence_ids[:, -1:] for w in work], dim=0)
             caches = [w.cache for w in work]
             logits = model.forward(inputs, caches, input_mask=None, loras=loras).float().cpu()
 
             eos = []
             for i in range(len(work)):
                 item = work[i]
-                r = random.random()
-                token, _, _ = ExLlamaV2Sampler.sample(
-                    logits[i: i + 1, :, :], item.settings, item.input_ids, r, tokenizer
-                )
-                item.output_ids = torch.cat([item.output_ids, token], dim=1)
-                item.input_ids = torch.cat([item.input_ids, token], dim=1)
+                
                 item.completion_tokens += 1
+                item.generator.logits_queue.append(logits[i: i + 1, :, :])
+                # with token_healing off, this queue only needs depth 1.
+                # Continuing here can't work because we must update item.generator.sequence_ids before
+                # generating the next batch. So more invasive changes to ExLlamaV2StreamingGenerator
+                # would be required.
+                #if len(item.generator.logits_queue) < 2: # from inspection, most .stream() will consume
+                #    continue                
 
-                stopped = token.item() == tokenizer.eos_token_id
-                limited = item.cache.current_seq_len == item.cache.max_seq_len
+                chunk, stopped, tokens = item.generator.stream()
+                item.output_str += chunk
+
+                limited = item.cache.current_seq_len >= item.cache.max_seq_len
                 final = stopped or limited
                 finish_reason = None
                 if final:
@@ -248,18 +277,9 @@ async def inference_loop():
                     final = True
                     finish_reason = item.request.finish_reason
                     
-                if final or (item.request.stream and send_chunk):
+                if final or (item.request.stream and send_chunk and item.output_str):
                     try:
-                        content = tokenizer.decode(item.output_ids)[0]
-                        
-                        # this bullshit is because sentencepiece drops leading spaces,
-                        # so simply clearing item.output_ids fails here with missing spaces.
-                        # instead, we have to decode everything and trim off the already-returned
-                        # bits. Fancier (!?) would be to use a random token to stuff on the front
-                        pos = len(content)
-                        content = content[item.output_offset:]
-                        item.output_offset = pos
-                        
+                        content = item.output_str
                         if item.first_content:
                             content = content.lstrip()
                             item.first_content = False
@@ -275,9 +295,7 @@ async def inference_loop():
                         eos.insert(0, i)  # Indices of completed prompts
                     else:
                         # reset after sending stream delta
-                        pass
-                        # see above re: sentencepiece
-                        #item.output_ids = torch.empty((1, 0), dtype=torch.long)
+                        item.output_str = ""
 
             # Remove completed prompts from the list
             for i in eos:
@@ -396,7 +414,7 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
                     model=prompt.model,
                 )
                 # print(".", end="\n" if finish_reason is not None else "")
-                print(qresponse.content, end="\n" if request.finish_reason is not None else "")
+                #print(qresponse.content, end="\n" if request.finish_reason is not None else "")
                 sys.stdout.flush()
                 # print(repr(response))
                 yield response
