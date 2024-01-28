@@ -7,7 +7,7 @@
 
 <body>
     <div id='modelDiv'><h1 id='modelLabel' style="font-style:italic">waiting for status...</h1></div>
-    <div id='graphDiv'></div>
+    <div id='graphDiv' style="height:650px"></div>
     <script type='text/javascript'>
         var layout = {
             xaxis: {
@@ -56,6 +56,13 @@
                 title: 'Count',
                 rangemode: 'tozero',
                 autorange: true,
+                domain: [0, 0.45],
+            },
+            yaxis2: {
+                title: 'Rate',
+                rangemode: 'tozero',
+                autorange: true,
+                domain: [0.55, 1.0],
             },
         };
 
@@ -81,9 +88,9 @@
                     MODEL_LABEL.style="font-style:italic";
                     MODEL_LABEL.innerHTML="unloaded";
                 }
-                var figure = data['queues'];
                 now = new Date();
-                figure.map((obj) => {
+                var queues = data['queues'];
+                queues.map((obj) => {
                     obj.x = obj.x.map(x => new Date(x * 1000.0));
                     obj.x.push(now);
                     obj.y.push(obj.y[obj.y.length - 1]);
@@ -92,7 +99,18 @@
                     obj.line = { "shape": "hv" }; // step plot
                     return obj;
                 });
-                Plotly.newPlot(GRAPH_DIV, figure, layout);
+                var rates = data['rates'];
+                rates.map((obj) => {
+                    obj.x = obj.x.map(x => new Date(x * 1000.0));
+                    obj.x.push(now);
+                    obj.y.push(obj.y[obj.y.length - 1]);
+                    obj.mode = "lines";
+                    obj.type = "scatter";
+                    obj.yaxis = 'y2';
+                    obj.line = { "shape": "linear" };
+                    return obj;
+                });
+                Plotly.newPlot(GRAPH_DIV, queues.concat(rates), layout);
                 xrange = GRAPH_DIV.layout.xaxis.range.map(x => new Date(x));
                 // need better logic when there are big gaps in data, for now just let me scroll
                 //if (Math.abs(now.getTime() - xrange[1].getTime()) < 10 * 1000) {

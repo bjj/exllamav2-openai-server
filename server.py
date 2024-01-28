@@ -77,21 +77,29 @@ def next_request_index():
 
 
 class ServerStatus:
+    work_item_times: list[float] = [time.time()]
     work_items: list[int] = [0]
+    
+    queue_depth_times: list[float] = [time.time()]
     queue_depths: list[int] = [0]
-    times: list[float] = [time.time()]
+
+    token_rate_times: list[float] = [time.time()]
+    token_rates: list[float] = [0.0]
 
     def update_work_items(self, n):
         if n != self.work_items[-1]:
-            self.times.append(time.time())
+            self.work_item_times.append(time.time())
             self.work_items.append(n)
-            self.queue_depths.append(self.queue_depths[-1])
 
     def update_queue_depths(self, n):
         if n != self.queue_depths[-1]:
-            self.times.append(time.time())
+            self.queue_depth_times.append(time.time())
             self.queue_depths.append(n)
-            self.work_items.append(self.work_items[-1])
+            
+    def update_token_rates(self, n, offset=0, force=False):
+        if n != self.token_rates[-1] or force:
+            self.token_rate_times.append(time.time() + offset)
+            self.token_rates.append(n)
 
 status = ServerStatus()
 
@@ -203,17 +211,32 @@ async def inference_loop():
         token_healing_must_be_false = False # see below
         item.generator.begin_stream(input_ids, item.settings, loras=loras, token_healing=token_healing_must_be_false)
         work.append(item)
+    
+    token_rate_start_time = asyncio.get_event_loop().time()
+    token_rate_count = 0
+    def update_token_rates(force=False):
+        nonlocal token_rate_start_time, token_rate_count
+        now = asyncio.get_event_loop().time()
+        duration = now - token_rate_start_time
+        if duration < 1.0 and not force:
+            return
+        if duration > 0:
+            status.update_token_rates(token_rate_count / duration, -duration / 2, force)
+        token_rate_start_time = now
+        token_rate_count = 0
         
     while processing_started:
         added = False
         
         # If we need a new model, handle that when the work queue drains
         if pending_model_request and not work:
+            update_token_rates(True)
             modelfile = pending_model_request.modelfile
             await load_model()
             add_workitem(pending_model_request)
             added = True
             pending_model_request = None
+            update_token_rates(True)
 
         # If pending model request, do not add more work items.
         # Else enter this (possibly blocking) loop if there's nothing to do (ok to block)
@@ -222,6 +245,7 @@ async def inference_loop():
             try:
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except TimeoutError:
+                update_token_rates()
                 break
             status.update_queue_depths(prompts_queue.qsize())
             
@@ -237,6 +261,7 @@ async def inference_loop():
             
         if added:
             status.update_work_items(len(work))
+            update_token_rates(len(work) == 1)
             print(f"workitems {len(work)}")
 
         # process as long as there are incomplete requests
@@ -246,11 +271,13 @@ async def inference_loop():
             if now >= next_stream_time:
                 next_stream_time = now + chunk_interval
                 send_chunk = True
+                update_token_rates()
 
             inputs = torch.cat([w.generator.sequence_ids[:, -1:] for w in work], dim=0)
             caches = [w.cache for w in work]
             logits = model.forward(inputs, caches, input_mask=None, loras=loras).float().cpu()
-
+            token_rate_count += len(work)
+            
             eos = []
             for i in range(len(work)):
                 item = work[i]
@@ -300,6 +327,8 @@ async def inference_loop():
             # Remove completed prompts from the list
             for i in eos:
                 work.pop(i)
+            if not work and prompts_queue.qsize() == 0:
+                update_token_rates(True)
             if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
                 print(f"workitems {len(work)}")
                 status.update_work_items(len(work))
@@ -327,8 +356,11 @@ async def websocket_status(websocket: WebSocket):
         data = {
             "model": modelfile.repository if modelfile else None,
             "queues": [
-                { "x": status.times, "y": status.work_items, "name": "run" },
-                { "x": status.times, "y": status.queue_depths, "name": "wait" },                
+                { "x": status.work_item_times, "y": status.work_items, "name": "run" },
+                { "x": status.queue_depth_times, "y": status.queue_depths, "name": "wait" },                
+            ],
+            "rates": [
+                { "x": status.token_rate_times, "y": status.token_rates, "name": "tok/s" },
             ],
         }
         try:
