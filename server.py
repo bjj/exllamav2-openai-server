@@ -124,6 +124,7 @@ class QueueRequest(BaseModel):
 class QueueResponse(BaseModel):
     content: str
     finish_reason: str | None = None
+    status_code: int = 200
     completion_tokens: int = 0
     prompt_tokens: int = 0
 
@@ -194,7 +195,8 @@ async def inference_loop():
         n_input_tokens = input_ids.shape[-1]
         print(f"num input tokens {n_input_tokens}")
         if n_input_tokens >= config.max_seq_len:
-            response = QueueResponse(content="Input tokens exceeded. Sorry for not returning a proper error.", finish_reason="input_tokens_exceeded")
+            response = QueueResponse(status_code=403, finish_reason="tokens_exceeded_error",
+                                     content=f"Input tokens exceeded. Model limit: {config.max_seq_len}.")
             await request.completion_queue.put(response)
             return False
         
@@ -245,10 +247,16 @@ async def inference_loop():
         # If we need a new model, handle that when the work queue drains
         if pending_model_request and not work:
             update_token_rates(True)
-            modelfile = pending_model_request.modelfile
-            await load_model()
-            if await add_workitem(pending_model_request):
-                added = True
+            try:
+                modelfile = pending_model_request.modelfile
+                await load_model()
+                if await add_workitem(pending_model_request):
+                    added = True
+            except:
+                response = QueueResponse(status_code=500, finish_reason="server_error",
+                                         content=f"Unable to load requested model {modelfile.repository}.")
+                await pending_model_request.completion_queue.put(response)
+                modelfile = None
             pending_model_request = None
             update_queue_depths()
             update_token_rates(True)
@@ -386,12 +394,26 @@ async def websocket_status(websocket: WebSocket):
             break
 
 
+# This is meant to be returned. If raised, catch yourself and return
+# Maybe there's a cleaner way to do this by inheriting from HTTPException
+class ApiErrorResponse(JSONResponse, Exception):
+    def __init__(
+        self, *,
+        status_code: int,
+        message: str,
+        type: str,
+        param: typing.Any = None,
+        code: typing.Any = None
+    ):
+        error = ErrorResponse.Error(message=message, type=type, param=param, code=code)
+        response = ErrorResponse(error=error)
+        super().__init__(status_code=status_code, content=jsonable_encoder(response))
 
 last_queued_modelfile = None
 
 @app.post(
     "/v1/chat/completions",
-    response_class=typing.Union[StreamingJSONResponse, JSONResponse],
+    response_class=typing.Union[StreamingJSONResponse, JSONResponse, ApiErrorResponse],
 )
 async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
     global modelfile, prompts_queue, config, status, last_queued_modelfile
@@ -404,7 +426,8 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
         try:
             newmodelfile = load_modelfile(prompt.model)
         except FileNotFoundError:
-            raise HTTPException(status_code=400, detail=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
+            return ApiErrorResponse(status_code=400, type="invalid_request_error",
+                                    message=f"Model \"{prompt.model}\" is not available. Try adding it with create_model.py")
         last_queued_modelfile = newmodelfile
         
     # Listify stop
@@ -451,8 +474,12 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
                 qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout)
                 request.finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
-                request.finish_reason = "timeout"
-                raise HTTPException(status_code=504, detail="Processing the prompt timed out.")
+                request.finish_reason = "timeout" # abort inference
+                raise ApiErrorResponse(status_code=408, type="timeout", message=f"Processing did not complete within {args.timeout} seconds.")
+            if qresponse.status_code >= 300:
+                raise ApiErrorResponse(status_code=qresponse.status_code, type=qresponse.finish_reason,
+                                       message=qresponse.content)
+
             if request.stream:
                 delta = ChatCompletionsChunkResponse.Choice.Delta(content=qresponse.content, role="assistant")
                 choice = ChatCompletionsChunkResponse.Choice(finish_reason=request.finish_reason, index=1, delta=delta)
@@ -487,12 +514,14 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
                 #print(repr(response))
                 yield response
 
-    if request.stream:
-        return StreamingJSONResponse(gen())
-    else:
-        response = await gen().__anext__()
-        return JSONResponse(jsonable_encoder(response))
-
+    try:
+        if request.stream:
+            return StreamingJSONResponse(gen())
+        else:
+            response = await gen().__anext__()
+            return JSONResponse(jsonable_encoder(response))
+    except ApiErrorResponse as e:
+        return e
 
 @app.get("/v1/models", response_class=JSONResponse)
 async def api_models():

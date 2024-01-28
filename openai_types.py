@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel
+import typing
 
 class ChatCompletions(BaseModel):
     class Message(BaseModel):
@@ -82,10 +83,21 @@ class ModelsResponse(BaseModel):
         id: str
         created: int
         object: str = "model"
-        onwed_by: str = "hmm"
+        onwed_by: str = "system"
         
     object: str = "list"
     data: list[ModelsResponse.Model]
     
 ModelsResponse.update_forward_refs()
 ModelsResponse.Model.update_forward_refs()
+
+class ErrorResponse(BaseModel):
+    class Error(BaseModel):
+        message: str
+        type: str
+        param: typing.Any = None
+        code: typing.Any = None
+    
+    error: ErrorResponse.Error
+
+ErrorResponse.update_forward_refs()
