@@ -10,6 +10,7 @@ supports:
 * dynamic model loading
 * import of ollama configs (bring your own exl2)
 * works with continue.dev, ollama webui, openai python module
+* can't vouch for multi-gpu because my other gpu hasn't arrived
 
 ## Installation
 
