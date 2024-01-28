@@ -95,6 +95,8 @@ class ServerStatus:
         if n != self.queue_depths[-1]:
             self.queue_depth_times.append(time.time())
             self.queue_depths.append(n)
+    def increment_queue_depths(self):
+        self.update_queue_depths(self.queue_depths[-1] + 1)
             
     def update_token_rates(self, n, offset=0, force=False):
         if n != self.token_rates[-1] or force:
@@ -170,7 +172,7 @@ class WorkItem:
     first_content: bool = True
 
 async def inference_loop():
-    global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model
+    global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model, config
     processing_started = True
 
     # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
@@ -181,21 +183,27 @@ async def inference_loop():
 
     work: list[WorkItem] = []
 
-    def add_workitem(request):
+    async def add_workitem(request):
         if request.finish_reason:
-            return
-        
-        item = WorkItem()
+            return False
         
         chat = ollama_template.Prompt(modelfile).chatString(request.messages)
         #print(chat)
 
         input_ids = tokenizer.encode(chat)
-        item.prompt_tokens = input_ids.shape[-1] - 1
+        n_input_tokens = input_ids.shape[-1]
+        print(f"num input tokens {n_input_tokens}")
+        if n_input_tokens >= config.max_seq_len:
+            response = QueueResponse(content="Input tokens exceeded. Sorry for not returning a proper error.", finish_reason="input_tokens_exceeded")
+            await request.completion_queue.put(response)
+            return False
+        
+        item = WorkItem()
+        item.prompt_tokens = n_input_tokens
         batch_size = 1
         max_tokens = request.max_tokens or config.max_seq_len
         CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
-        item.cache = CacheClass(model, max_seq_len=(input_ids.size(1) + max_tokens), batch_size=batch_size)
+        item.cache = CacheClass(model, max_seq_len=min(config.max_seq_len, (n_input_tokens + max_tokens)), batch_size=batch_size)
         item.generator = ExLlamaV2StreamingGenerator(model, item.cache, tokenizer)
         item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop, *modelfile.stop])
         patch_gen_single_token(item.generator)
@@ -211,6 +219,7 @@ async def inference_loop():
         token_healing_must_be_false = False # see below
         item.generator.begin_stream(input_ids, item.settings, loras=loras, token_healing=token_healing_must_be_false)
         work.append(item)
+        return True
     
     token_rate_start_time = asyncio.get_event_loop().time()
     token_rate_count = 0
@@ -224,6 +233,11 @@ async def inference_loop():
             status.update_token_rates(token_rate_count / duration, -duration / 2, force)
         token_rate_start_time = now
         token_rate_count = 0
+    
+    def update_queue_depths():
+        global prompts_queue
+        nonlocal pending_model_request
+        status.update_queue_depths(prompts_queue.qsize() + (1 if pending_model_request is not None else 0))
         
     while processing_started:
         added = False
@@ -233,9 +247,10 @@ async def inference_loop():
             update_token_rates(True)
             modelfile = pending_model_request.modelfile
             await load_model()
-            add_workitem(pending_model_request)
-            added = True
+            if await add_workitem(pending_model_request):
+                added = True
             pending_model_request = None
+            update_queue_depths()
             update_token_rates(True)
 
         # If pending model request, do not add more work items.
@@ -247,22 +262,22 @@ async def inference_loop():
             except TimeoutError:
                 update_token_rates()
                 break
-            status.update_queue_depths(prompts_queue.qsize())
             
             if request.finish_reason:
+                update_queue_depths()
                 continue
             
             if modelfile is None or request.modelfile.repository != modelfile.repository:
                 pending_model_request = request
+                update_queue_depths()
                 break
             
-            add_workitem(request)
-            added = True
+            if await add_workitem(request):
+                added = True
             
         if added:
             status.update_work_items(len(work))
             update_token_rates(len(work) == 1)
-            print(f"workitems {len(work)}")
 
         # process as long as there are incomplete requests
         if work:
@@ -330,7 +345,6 @@ async def inference_loop():
             if not work and prompts_queue.qsize() == 0:
                 update_token_rates(True)
             if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
-                print(f"workitems {len(work)}")
                 status.update_work_items(len(work))
 
             # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
@@ -423,7 +437,7 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
     )
 
     await prompts_queue.put(request)
-    status.update_queue_depths(prompts_queue.qsize())
+    status.increment_queue_depths()
 
     created = int(time.time())  # constant for all chunks according to api docs
     asyncio.create_task(poll_is_disconnected(fastapi_request, request))
