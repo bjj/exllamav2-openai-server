@@ -292,7 +292,7 @@ async def inference_loop():
 
 @app.get("/", response_class=typing.Union[HTMLResponse, FileResponse])
 def status_page():
-    file_path = pathlib.Path('status.html')
+    file_path = pathlib.Path('static/status.html')
 
     if file_path.exists():
         return FileResponse(file_path.resolve(), media_type='text/html')
