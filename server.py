@@ -189,7 +189,7 @@ async def inference_loop():
         CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
         item.cache = CacheClass(model, max_seq_len=(input_ids.size(1) + max_tokens), batch_size=batch_size)
         item.generator = ExLlamaV2StreamingGenerator(model, item.cache, tokenizer)
-        item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop])
+        item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop, *modelfile.stop])
         patch_gen_single_token(item.generator)
         item.settings = settings_proto.clone()
         item.settings.temperature = request.temperature
