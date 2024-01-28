@@ -515,10 +515,15 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
                 yield response
 
     try:
+        # catch error from first gen. I don't love this
+        response = await gen().__anext__()
         if request.stream:
-            return StreamingJSONResponse(gen())
+            async def concat(first, rest):
+                yield first
+                async for next in rest:
+                    yield next
+            return StreamingJSONResponse(concat(response, gen()))
         else:
-            response = await gen().__anext__()
             return JSONResponse(jsonable_encoder(response))
     except ApiErrorResponse as e:
         return e
