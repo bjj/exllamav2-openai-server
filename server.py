@@ -148,7 +148,7 @@ def patch_gen_single_token(sampler):
             raise NotImplementedError
         
         logits = self.logits_queue.pop(0)
-        token, _, eos = ExLlamaV2Sampler.sample(logits, gen_settings, self.sequence_ids[:1, :], random.random(), self.tokenizer, prefix_token)
+        token, prob, eos = ExLlamaV2Sampler.sample(logits, gen_settings, self.sequence_ids[:1, :], random.random(), self.tokenizer, prefix_token)
 
         if self.sequence_ids.shape[0] > 1 and token.shape[0] == 1:
             self.sequence_ids = torch.cat([self.sequence_ids, token.repeat(self.sequence_ids.shape[0], 1)], dim = 1)
@@ -156,7 +156,10 @@ def patch_gen_single_token(sampler):
             self.sequence_ids = torch.cat([self.sequence_ids, token], dim = 1)
 
         gen_settings.feed_filters(token)
-        return token, eos
+        if hasattr(self, "no_probs"):  # hacks upon hacks: try to support 0.12
+            return token, prob, eos
+        else:
+            return token, eos
     
     sampler.logits_queue = []
     sampler._gen_single_token = _gen_single_token.__get__(sampler, ExLlamaV2StreamingGenerator)
