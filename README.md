@@ -1,49 +1,97 @@
-# exllamav2-openai-server
-An implementation of the OpenAI API using the exllama2 backend. It supports batching and streaming.
+# ExLlamaV2-OpenAI-Server
 
-This wouldn't be possible without exllamav2 or EricLLM. I saw [EricLLM](https://github.com/epolewski/EricLLM) and thought it was already doing what this package does, and my disappointment kickstarted me into writing this code.
+An implementation of the OpenAI API using the ExLlamaV2 backend.
+This project is not affiliated with ExLlamaV2 or OpenAI.
 
-supports:
-* OpenAI API `/v1/models`, `/v1/chat/completions`
-* continuous batching
-* streaming responses
-* dynamic model loading
-* import of ollama configs (bring your own exl2)
-* works with continue.dev, ollama webui, openai python module
-* can't vouch for multi-gpu because my other gpu hasn't arrived
-* does not limit input to context length or slide input when reaching context len
-* has a monitor URL
-* probably slow due to streaming everything
+## Features
+
+* Continuous batching.
+* Streamed responses.
+* OpenAI compatibility for `/v1/models` and `/v1/chat/completions` endpoints
+* Uses Ollama model metadata information to set default prompting and parameters.
+* Remembers your settings per model.
+* Loads models on demand.
+* Status endpoint with graphs! (and nothing else)
+
+I've been testing against the python openai module, [Ollama Web UI](https://github.com/ollama-webui/ollama-webui) and [continue.dev](https://continue.dev/).
+
+## Origin Story
+
+This wouldn't be possible without [ExLlamaV2](https://github.com/turboderp/exllamav2) or EricLLM. I saw [EricLLM](https://github.com/epolewski/EricLLM) and thought it was close to
+doing what I wanted, and by the time I realized what I was doing, I had pretty much completely rewritten it.
+
+My goals are to be able to figure out how to set up a model once (preferably by leveraging work by the Ollama team) and then easily use it in a variety of frontends without thinking about it again. However, I also like to be able to quantize things to meet specific memory goals, and I like the performance of ExLlamaV2. Hence this project.
+
+## Issues
+
+* I have no idea what I'm doing.
+* My second GPU is lost in the mail somewhere, so multi-GPU support is untested.
+* It has a `--num_workers` option which you definitely should not set higher than 1 because there is no attempt to solve routing issues that would cause with dynamic model loading.
+* To combat creeping VRAM usage over time it is aggressively calling `torch.cuda.empty_cache()` which definitely has a performance impact, but it's better than running out of VRAM.
+* It's currently streaming everything internally, which is almost certainly slowing down non-streaming requests.
+* The ExLlamaV2 class `ExLlamaV2StreamingGenerator` has too much important stuff in it to avoid using it, but it also wasn't meant to be used this way.
+* Model loading is synchronous, prompt parsing is synchronous, token decode is serialized with model inference, ...
+* Requires `exllamav2==0.0.11` because 
 
 ## Installation
 
-
-## Usage
-
-* create_model.py
-* arg hierarchy: server args > create args > ollama defaults > model defaults
-
-Example usage for one GPU:
 ```
-python ericLLM.py --model ./models/NeuralHermes-2.5-Mistral-7B-5.0bpw-h6-exl2 --max_prompts 8 --num_workers 2
-```
-In a dual-GPU setup:
-```
-python ericLLM.py --model ./models/NeuralHermes-2.5-Mistral-7B-5.0bpw-h6-exl2 --gpu_split 24,24 --max_prompts 8 --num_workers 4 --gpu_balance
-```
-These will both launch the API with multiple workers. In the second example, performance is increased with the --gpu_balance switch that keeps the small models from splitting over GPUs. There's still work to be done on this and I think it gets CPU-bound right now when using 2 GPUs.
-
-Test the API:
-
-```
-...use the openai python lib...
+git clone https://github.com/bjj/exllamav2-openai-server
+cd exllamav2-openai-server
+pip install -r requirements.txt
 ```
 
-## Options
+Notes:
+* Tested on python 3.11.7. 3.12+ seems to have version conflicts.
+* First start will take a long time to compile `exllamav2_ext`.
 
-Help is available via `--help`` or `-h``
+## Adding Models
 
-## About
+To add a new model:
 
+1. Download a ExLlamaV2 compatible model (EXL2 or GPTQ)
+2. Browse the [Ollama Library](https://ollama.ai/library) to find the matching repository. This is where we'll get prompt information and other default settings.
+3. Run `python create_model.py --model-dir <path_to_exl2> <repository[:tag]>`
+4. Repeat for as many models as you want to use
 
-## Throughput
+Note that tags are optional and often have the same metadata in the Ollama library. You can use them for yourself to give models unique names, for example `deepseek-coder:6.7b` and `deepseek-coder:33b`. This never downloads the GGUF files used by Ollama, so it doesn't matter what their default quantization is or what quantization tag you choose. **The quantization is determined by what EXL2 or GPTQ you download for yourself.**
+
+You can also pass options to `create_model.py` to override options provided by Ollama. For example, to add Mixtral-8x7B-Instruct, with a model in `E:\...`, prompting from Ollama, but with batching limited to 1 and context limited to 16k (for memory):
+
+```
+python .\create_model.py --model-dir E:\exl2-llm-models\turboderp\Mixtral-8x7B-instruct-3.5bpw-exl2\ --max-batch-size 1 --max-seq-len 16384 mixtral
+```
+
+You can add models while the server is running. It reads the `models.json` file again whenever it needs to know about the models.
+
+## Running the Server
+
+You can run the server with no arguments. It will listen on `0.0.0.0:8000` by default:
+
+```
+python server.py
+```
+
+The server takes several optional arguments. The options used are selected with the following priority:
+
+1. The options provided in the API request (if they don't exceed limits)
+2. The `server.py` command line arguments
+3. The `create_model.py` command line arguments
+4. The Ollama repository configuration data
+5. The model's `config.json`
+
+For example, you pass `--max-batch-size 8` to the server. You get a batch size of 8 even though the model (see example above) was limited to `--max-batch-size 1`.
+
+You can do a quick test with `curl http://localhost:8000/v1/models`
+
+## Monitoring
+
+There is a simple webpage at `http://localhost:8000/`
+
+![screenshot](batchplot.png)
+
+## Multi GPU
+
+It passes through arguments like `--gpu_split`, but this is untested.
+
+I left in some EricLLM code `--gpu_balance` and `--num_workers`. These almost certainly do nothing good at this point because dynamic model loading will require fancier routing.
