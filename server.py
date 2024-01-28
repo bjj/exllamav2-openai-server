@@ -269,12 +269,12 @@ async def inference_loop():
             
             if modelfile is None or request.modelfile.repository != modelfile.repository:
                 pending_model_request = request
-                update_queue_depths()
                 break
             
             if await add_workitem(request):
                 added = True
-            
+        
+        update_queue_depths()
         if added:
             status.update_work_items(len(work))
             update_token_rates(len(work) == 1)
