@@ -302,9 +302,15 @@ async def inference_loop():
 
             inputs = torch.cat([w.generator.sequence_ids[:, -1:] for w in work], dim=0)
             caches = [w.cache for w in work]
-            logits = model.forward(inputs, caches, input_mask=None, loras=loras).float().cpu()
+            logits = model.forward(inputs, caches, input_mask=None, loras=loras).float()
             token_rate_count += len(work)
             
+            # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
+            await asyncio.sleep(0)
+
+            # sync with GPU
+            logits = logits.cpu()
+
             eos = []
             for i in range(len(work)):
                 item = work[i]
@@ -361,9 +367,6 @@ async def inference_loop():
                 update_token_rates(True)
             if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
                 status.update_work_items(len(work))
-
-            # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
-            await asyncio.sleep(0)
 
 
 @app.get("/", response_class=typing.Union[HTMLResponse, FileResponse])
