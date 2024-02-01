@@ -5,3 +5,4 @@ torch>=2.1.0
 exllamav2>=0.0.11
 uvicorn
 httpx
+tokenizers
