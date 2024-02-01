@@ -38,12 +38,6 @@ def parse_args():
     parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
                         help="Sets array gpu_split and accepts input like 16,24")
-    parser.add_argument(
-        "--gpu_balance",
-        action="store_true",
-        default=False,
-        help="Balance workers on GPUs to maximize throughput. Make sure --gpu_split is set to the full memory of all cards."
-    )
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha")
     parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
     parser.add_argument("--cache_8bit", action="store_true", help="Use 8 bit cache")
@@ -552,39 +546,9 @@ async def api_models():
 
 async def setup_gpu_split():
     global gpu_split
-    if not args.gpu_balance:
-        gpu_split = list(map(int, args.gpu_split.split(",")))
-        return
-    
-    print("Reading gpu_split...")
-    while os.path.exists("gpu_assign.lock"):
-        await asyncio.sleep(0.3)
-    with open("gpu_assign.lock", "w", encoding="utf-8") as file:
-        file.write("")
-    # Read the first line, remove it, and write the rest back to the file
-    with open("gpu_assign", "r+", encoding="utf-8") as file:
-        # Read the first line
-        first_line = file.readline().replace("\n", "")
-
-        # Read the rest of the file
-        rest_of_content = file.read()
-
-        # Move the cursor to the beginning of the file
-        file.seek(0)
-
-        # Write the rest of the content back to the file
-        file.write(rest_of_content)
-
-        # Truncate the file to remove any remaining characters from the old content
-        file.truncate()
-        print(first_line)
-    try:
-        os.remove("gpu_assign.lock")
-    except OSError as e:
-        print(f"Error removing lock: {e}")
-
-    gpu_split = list(map(int, first_line.split(",")))
-
+    gpu_split = None
+    if args.gpu_split:
+        gpu_split = list(map(float, args.gpu_split.split(",")))
 
 async def load_model():
     global args, model, modelfile, tokenizer, loras, config, MAX_PROMPTS
@@ -663,8 +627,7 @@ async def startup_event():
     global args, modelfile
     
     print("Starting up...")
-    if args.gpu_split:
-        await setup_gpu_split()
+    await setup_gpu_split()
     if modelfile:
         if args.gpu_split and args.num_workers > 1:
             await asyncio.sleep(random.uniform(0.1, 3))
@@ -682,44 +645,6 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-
-    # Clean up any previous file locks
-    if os.path.exists("gpu_assign"):
-        print(f"Deleting old gpu assignment file")
-        os.remove("gpu_assign")
-    if os.path.exists("gpu_assign.lock"):
-        print(f"Deleting old gpu lock file")
-        os.remove("gpu_assign.lock")
-
-    # global worker_assignments
-    # worker_assignments = []
-    # Load balance workers across GPUs
-    if args.gpu_balance:
-        gpus = list(map(int, args.gpu_split.split(",")))
-        average_workers = int(args.num_workers / len(gpus))
-        content = ""
-        for i in range(args.num_workers):
-            gpu_mapping = []
-            for j in range(len(gpus)):
-                # If the number of workers doesn't fit evenly on the cards, distribute the odd ones out. Since exllamav2 doesn't
-                # distribute perfectly with --gpu_split, I'm going to just guess at it now with a formula. There's probably a more
-                # clever way to split them up perfectly, I just haven't come up with it yet.
-                if (
-                    i + 1 + args.num_workers % len(gpus) > args.num_workers
-                ) and args.num_workers % len(gpus) != 0:
-                    # if i % len(gpus) != j:
-                    gpu_mapping.append(int(gpus[j] / len(gpus) + 2))
-                    # else:
-                    # gpu_mapping.append(gpus[j])
-                else:
-                    if i % len(gpus) == j:
-                        gpu_mapping.append(gpus[j])
-                    else:
-                        gpu_mapping.append(0)
-            text_mapping = ",".join(map(str, gpu_mapping))
-            content += text_mapping + "\n"
-        with open("gpu_assign", "w", encoding="utf-8") as file:
-            file.write(content)
 
     print(f"Starting a server at {args.host} on port {args.port}...")
     uvicorn.run(
