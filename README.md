@@ -81,6 +81,16 @@ For example, you pass `--max-batch-size 8` to the server. You get a batch size o
 
 You can do a quick test with `curl http://localhost:8000/v1/models`
 
+## If you get "Out of Memory"
+
+When loading the model, the automatic GPU splitting in ExLlamaV2 allocates all the memory it could possibly need to satisfy the batching and context requirements. If you run out of memory (or your model loads onto two GPUs when you are sure it should fit on one):
+
+* Use `--cache_8bit` to reduce the memory footprint of the cache. This has a significant effect without sacrificing much.
+* Reduce the maximum batch size per-model or on the `server.py` command line with `--max-batch-size`. Maximum throughput can be achieved with fairly low batch sizes. Going higher than that just lets more users see progress happening on streaming requests at once.
+* Reduce the maximum context size per-model or on the `server.py` command line with `--max-seq-len`. This will catch you out on small models with huge context like `dolphin-mistral:7b`.
+* There is a very small effect from reducing `--max-input-len`.
+* If you use manual `--gpu_split` you will load the model without accounting for the memory needed to actually handle requests. This will work fine if you don't get many concurrent requests and/or don't use much context, but you risk running out of memory unexpectedly later.
+
 ## Monitoring
 
 There is a simple webpage at `http://localhost:8000/`
@@ -89,4 +99,4 @@ There is a simple webpage at `http://localhost:8000/`
 
 ## Multi GPU
 
-You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise it will use ExLlamaV2's automatic splitting. Note that the auto splitting works by allocating as much memory as it will ever need for maximum context length and batch size. This is how it knows where to split. If you run out of memory loading with automatic splitting, you should reduce batching or context length (which you can do per-model) or try the 8bit cache. If you use manual splitting to avoid the initial OOM, you are just risking OOM later.
+You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise it will use ExLlamaV2's automatic splitting. Note that the auto splitting works by allocating as much memory as it will ever need for maximum context length and batch size. See "If you get 'Out of Memory'" above.
