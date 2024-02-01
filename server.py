@@ -41,8 +41,6 @@ def parse_args():
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha")
     parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
     parser.add_argument("--cache_8bit", action="store_true", help="Use 8 bit cache")
-    parser.add_argument("--num_workers", metavar="NUM_WORKERS", type=int,
-                        default=1, help="Number of worker processes to use")
 
     return parser.parse_args()
 
@@ -627,8 +625,6 @@ async def startup_event():
     print("Starting up...")
     await setup_gpu_split()
     if modelfile:
-        if args.gpu_split and args.num_workers > 1:
-            await asyncio.sleep(random.uniform(0.1, 3))
         await load_model()
     asyncio.create_task(inference_loop())
 
@@ -649,6 +645,5 @@ if __name__ == "__main__":
         "__main__:app",
         host=args.host,
         port=args.port,
-        workers=args.num_workers,
         http="h11",
     )
