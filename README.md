@@ -25,12 +25,10 @@ My goals are to be able to figure out how to set up a model once (preferably by 
 ## Issues
 
 * I have no idea what I'm doing.
-* My second GPU is lost in the mail somewhere, so multi-GPU support is untested.
 * To combat creeping VRAM usage over time it is aggressively calling `torch.cuda.empty_cache()` which definitely has a performance impact, but it's better than running out of VRAM.
 * It's currently streaming everything internally, which is almost certainly slowing down non-streaming requests.
 * The ExLlamaV2 class `ExLlamaV2StreamingGenerator` has too much important stuff in it to avoid using it, but it also wasn't meant to be used this way.
 * Model loading is synchronous, prompt parsing is synchronous, token decode is serialized with model inference, ...
-* Requires `exllamav2==0.0.11` because 
 
 ## Installation
 
@@ -91,4 +89,4 @@ There is a simple webpage at `http://localhost:8000/`
 
 ## Multi GPU
 
-You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise internally it will use ExLlamaV2's automatic splitting.
+You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise it will use ExLlamaV2's automatic splitting. Note that the auto splitting works by allocating as much memory as it will ever need for maximum context length and batch size. This is how it knows where to split. If you run out of memory loading with automatic splitting, you should reduce batching or context length (which you can do per-model) or try the 8bit cache. If you use manual splitting to avoid the initial OOM, you are just risking OOM later.
