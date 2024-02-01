@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
     parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
-                        help="Sets array gpu_split and accepts input like 16,24")
+                        help="Sets array gpu_split and accepts input like 16,24. Default is automatic")
     parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha")
     parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
     parser.add_argument("--cache_8bit", action="store_true", help="Use 8 bit cache")
@@ -52,6 +52,7 @@ what = torch.inference_mode()
 def load_modelfile(repository):
     return ollama_template.ModelFile(repository)
 
+loaded_pct = None
 modelfile = None
 if args.model:
     try:
@@ -256,6 +257,7 @@ async def inference_loop():
             pending_model_request = None
             update_queue_depths()
             update_token_rates(True)
+            status.update_token_rates(0, force=True) # need a better way to handle this boundary
 
         # If pending model request, do not add more work items.
         # Else enter this (possibly blocking) loop if there's nothing to do (ok to block)
@@ -373,13 +375,18 @@ def status_page():
 
 @app.websocket("/ws/status")
 async def websocket_status(websocket: WebSocket):
-    global status
+    global status, loaded_pct
     
     await websocket.accept()
     while True:
         await asyncio.sleep(1)
+        model_name = None
+        if modelfile:
+            model_name = modelfile.repository
+            if loaded_pct is not None and loaded_pct < 100:
+                model_name = f"{model_name} {loaded_pct:.1f}%"
         data = {
-            "model": modelfile.repository if modelfile else None,
+            "model": model_name,
             "queues": [
                 { "x": status.work_item_times, "y": status.work_items, "name": "run" },
                 { "x": status.queue_depth_times, "y": status.queue_depths, "name": "wait" },                
@@ -550,7 +557,7 @@ async def setup_gpu_split():
         gpu_split = list(map(float, args.gpu_split.split(",")))
 
 async def load_model():
-    global args, model, modelfile, tokenizer, loras, config, MAX_PROMPTS
+    global args, model, modelfile, tokenizer, loras, config, MAX_PROMPTS, gpu_split, loaded_pct
     
     unload_model()
     
@@ -586,18 +593,32 @@ async def load_model():
             
         config.max_batch_size = MAX_PROMPTS
 
-        global gpu_split
+        # use loading status callback to yield to web thread
+        def callback_gen(idx, total):
+            yield 100.0 * idx / total
         model = ExLlamaV2(config)
-        model.load(gpu_split=gpu_split)
+        if gpu_split is not None:
+            loader = model.load_gen(gpu_split=gpu_split, callback_gen=callback_gen)
+        else:
+            CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
+            scratch_cache = CacheClass(model, max_seq_len=config.max_seq_len, batch_size=config.max_batch_size, lazy = True)
+            loader = model.load_autosplit_gen(scratch_cache, callback_gen=callback_gen)
+        for pct in loader:
+            loaded_pct = pct
+            await asyncio.sleep(0)
+            
         tokenizer = ExLlamaV2Tokenizer(config)
         if modelfile.lora:
             lora = ExLlamaV2Lora.from_directory(model, args.lora)
             loras.append(lora)
     except Exception as e:
+        import traceback
+        traceback.print_exception(e);
         print(f"Exception loading {modelfile.repository}: {str(e)}")
         unload_model()
         raise
         
+    loaded_pct = None
     print(f"Model is loaded. {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 
@@ -609,6 +630,7 @@ def unload_model():
     model = None
     config = None
     tokenizer = None
+    loaded_pct = None
     for lora in loras:
         lora.unload()
     loras = []

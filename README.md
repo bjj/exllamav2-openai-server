@@ -26,7 +26,6 @@ My goals are to be able to figure out how to set up a model once (preferably by 
 
 * I have no idea what I'm doing.
 * My second GPU is lost in the mail somewhere, so multi-GPU support is untested.
-* It has a `--num_workers` option which you definitely should not set higher than 1 because there is no attempt to solve routing issues that would cause with dynamic model loading.
 * To combat creeping VRAM usage over time it is aggressively calling `torch.cuda.empty_cache()` which definitely has a performance impact, but it's better than running out of VRAM.
 * It's currently streaming everything internally, which is almost certainly slowing down non-streaming requests.
 * The ExLlamaV2 class `ExLlamaV2StreamingGenerator` has too much important stuff in it to avoid using it, but it also wasn't meant to be used this way.
@@ -92,6 +91,4 @@ There is a simple webpage at `http://localhost:8000/`
 
 ## Multi GPU
 
-It passes through arguments like `--gpu_split`, but this is untested.
-
-I left in some EricLLM code `--gpu_balance` and `--num_workers`. These almost certainly do nothing good at this point because dynamic model loading will require fancier routing.
+You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise internally it will use ExLlamaV2's automatic splitting.
