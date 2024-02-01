@@ -560,39 +560,36 @@ async def load_model():
     
     MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
     
-    config = ExLlamaV2Config()
-    config.model_dir = modelfile.model_dir
-    config.prepare()
-    
-    if args.rope_scale is not None:
-        config.scale_pos_emb = args.rope_scale
-    elif hasattr(modelfile, 'rope_scale'):
-        config.scale_pos_emb = modelfile.rope_scale
-        
-    if args.rope_alpha is not None:
-        config.scale_rope_alpha = args.rope_alpha
-    elif hasattr(modelfile, 'rope_alpha'):
-        config.scale_rope_alpha = modelfile.rope_alpha
-    
-    if modelfile.max_seq_len:
-        config.max_seq_len = modelfile.max_seq_len
-    if args.max_seq_len:
-        config.max_seq_len = args.max_seq_len
-        
-    if modelfile.max_input_len:
-        config.max_input_len = modelfile.max_input_len
-    if args.max_input_len:
-        config.max_input_len = args.max_input_len
-        
-    config.max_batch_size = MAX_PROMPTS
-
     try:
+        config = ExLlamaV2Config()
+        config.model_dir = modelfile.model_dir
+        config.prepare()
+        
+        if args.rope_scale is not None:
+            config.scale_pos_emb = args.rope_scale
+        elif hasattr(modelfile, 'rope_scale'):
+            config.scale_pos_emb = modelfile.rope_scale
+            
+        if args.rope_alpha is not None:
+            config.scale_rope_alpha = args.rope_alpha
+        elif hasattr(modelfile, 'rope_alpha'):
+            config.scale_rope_alpha = modelfile.rope_alpha
+        
+        if modelfile.max_seq_len:
+            config.max_seq_len = modelfile.max_seq_len
+        if args.max_seq_len:
+            config.max_seq_len = args.max_seq_len
+            
+        if modelfile.max_input_len:
+            config.max_input_len = modelfile.max_input_len
+        if args.max_input_len:
+            config.max_input_len = args.max_input_len
+            
+        config.max_batch_size = MAX_PROMPTS
+
+        global gpu_split
         model = ExLlamaV2(config)
-        if args.gpu_split:
-            global gpu_split
-            model.load(gpu_split=gpu_split)
-        else:
-            model.load()
+        model.load(gpu_split=gpu_split)
         tokenizer = ExLlamaV2Tokenizer(config)
         if modelfile.lora:
             lora = ExLlamaV2Lora.from_directory(model, args.lora)
