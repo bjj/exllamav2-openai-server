@@ -1,7 +1,8 @@
 import sys, os, time, torch, random, asyncio, json, argparse, pathlib, gc
+import uuid
 import typing
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.websockets import WebSocket
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.encoders import jsonable_encoder
@@ -63,13 +64,6 @@ if args.model:
         
 app = FastAPI()
 
-request_index = 0
-def next_request_index():
-    global request_index
-    request_index += 1
-    return request_index
-
-
 class ServerStatus:
     work_item_times: list[float] = [time.time()]
     work_items: list[int] = [0]
@@ -100,7 +94,7 @@ class ServerStatus:
 status = ServerStatus()
 
 class QueueRequest(BaseModel):
-    request_id: str = f"exllamav2-{next_request_index()}"
+    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     modelfile: typing.Any
     messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
