@@ -622,33 +622,40 @@ async def load_model():
         
     config.max_batch_size = MAX_PROMPTS
 
-    model = ExLlamaV2(config)
-    if args.gpu_split:
-        global gpu_split
-        model.load(gpu_split=gpu_split)
-    else:
-        model.load()
-    tokenizer = ExLlamaV2Tokenizer(config)
-    if modelfile.lora:
-        lora = ExLlamaV2Lora.from_directory(model, args.lora)
-        loras.append(lora)
+    try:
+        model = ExLlamaV2(config)
+        if args.gpu_split:
+            global gpu_split
+            model.load(gpu_split=gpu_split)
+        else:
+            model.load()
+        tokenizer = ExLlamaV2Tokenizer(config)
+        if modelfile.lora:
+            lora = ExLlamaV2Lora.from_directory(model, args.lora)
+            loras.append(lora)
+    except Exception as e:
+        print(f"Exception loading {modelfile.repository}: {str(e)}")
+        unload_model()
+        raise
         
     print(f"Model is loaded. {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 
 def unload_model():
     global model, config, tokenizer, loras
+    do_print = bool(model or loras)
     if model:
         model.unload()
-        model = None
-        config = None
-        tokenizer = None
-        for lora in loras:
-            lora.unload()
-        loras = []
-        gc.collect()
-        torch.cuda.empty_cache()
-        gc.collect()
+    model = None
+    config = None
+    tokenizer = None
+    for lora in loras:
+        lora.unload()
+    loras = []
+    gc.collect()
+    torch.cuda.empty_cache()
+    gc.collect()
+    if do_print:
         print(f"After unload, {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 @app.on_event("startup")
