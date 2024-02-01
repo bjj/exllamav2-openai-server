@@ -296,6 +296,7 @@ async def inference_loop():
 
             inputs = torch.cat([w.generator.sequence_ids[:, -1:] for w in work], dim=0)
             caches = [w.cache for w in work]
+            # NOTE: can run out of memory here. Need to handle that. torch.cuda.OutOfMemoryError
             logits = model.forward(inputs, caches, input_mask=None, loras=loras).float()
             token_rate_count += len(work)
             
