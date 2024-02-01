@@ -292,10 +292,16 @@ async def inference_loop():
             caches = [w.cache for w in work]
             # NOTE: can run out of memory here. Need to handle that. torch.cuda.OutOfMemoryError
             logits = model.forward(inputs, caches, input_mask=None, loras=loras).float()
+            event = torch.cuda.Event()
+            event.record(torch.cuda.default_stream())
             token_rate_count += len(work)
             
-            # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one)
-            await asyncio.sleep(0)
+            # yield to HTTP threads or we can't stream (and batched responses are all as slow as the last one).
+            # Without the loop, other things will not get enough time to run (if you have a stack of functions
+            # yielding values, only one will run each sleep(0) while making the next runnable).
+            # Sleeping for nonzero time here is almost guaranteed to wait too long due to sleep granularity.
+            while not event.query():
+                await asyncio.sleep(0)
 
             # sync with GPU
             logits = logits.cpu()
@@ -492,7 +498,7 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
                 )
                 # print(".", end="\n" if finish_reason is not None else "")
                 #print(qresponse.content, end="\n" if request.finish_reason is not None else "")
-                sys.stdout.flush()
+                #sys.stdout.flush()
                 # print(repr(response))
                 yield response
             else:
