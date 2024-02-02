@@ -2,13 +2,42 @@
 <html>
 
 <head>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
     <script src='https://cdn.plot.ly/plotly-latest.min.js'></script>
+    <style>
+        #modelDiv {
+            display: flex;
+            justify-content: left;
+        }
+        .modelname {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .modelunknown #modelLabel {
+            font-style: italic;
+        }
+        .modelunknown #unload {
+            display: none;
+        }
+        #unload {
+            margin-left: 20px;
+        }
+    </style>
 </head>
 
-<body>
-    <div id='modelDiv'><h1 id='modelLabel' style="font-style:italic">waiting for status...</h1></div>
+<body class="modelunknown">
+    <div id="modelDiv">
+        <span id="modelLabel" class="modelname">waiting for status...</span>
+        <button id="unload">Unload</button>
+    </div>
     <div id='graphDiv' style="height:750px"></div>
     <script type='text/javascript'>
+        $("#unload").click(function() {
+            $.ajax({
+                url: '/unload',
+                type: 'POST'
+            });
+        });
         var layout = {
             xaxis: {
                 type: "date",
@@ -72,8 +101,6 @@
             },
         };
 
-        var MODEL_LABEL = document.getElementById('modelLabel');
-
         var GRAPH_DIV = document.getElementById('graphDiv');
         var HOST = window.location.origin.replace(/^http/, 'ws');
         var ws = null;
@@ -86,13 +113,13 @@
                 var data = JSON.parse(event.data);
                 var model = data['model'];
                 if (model) {
-                    MODEL_LABEL.style="";
-                    MODEL_LABEL.innerHTML=model;
+                    $("#modelLabel").text(model);
+                    $("body").removeClass("modelunknown");
                 }
                 else
                 {
-                    MODEL_LABEL.style="font-style:italic";
-                    MODEL_LABEL.innerHTML="unloaded";
+                    $("#modelLabel").text("unloaded");
+                    $("body").addClass("modelunknown");
                 }
                 now = new Date();
                 var queues = data['queues'];

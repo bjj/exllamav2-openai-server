@@ -53,6 +53,8 @@ what = torch.inference_mode()
 def load_modelfile(repository):
     return ollama_template.ModelFile(repository)
 
+request_unload = False
+request_cancel_all = False
 loaded_pct = None
 modelfile = None
 if args.model:
@@ -258,6 +260,30 @@ async def inference_loop():
     while processing_started:
         added = False
         
+        global request_cancel_all
+        async def send_cancel(req):
+            response = QueueResponse(status_code=429, finish_reason="rate_limit_error",
+                                     content=f"Request queue was flushed while request was pending.")
+            await req.completion_queue.put(response)
+            
+        if request_cancel_all:
+            if pending_model_request is not None:
+                await send_cancel(pending_model_request)
+                pending_model_request = None
+            for w in work:
+                w.request.finish_reason = "canceled"
+            while not prompts_queue.empty():
+                await send_cancel(prompts_queue.get_nowait())
+            if not work and prompts_queue.empty():
+                request_cancel_all = False
+        
+        global request_unload
+        if request_unload and not work:
+            pending_model_request = None
+            modelfile = None
+            unload_model()
+            request_unload = False
+
         # If we need a new model, handle that when the work queue drains
         if pending_model_request and not work:
             update_token_rates(True)
@@ -426,6 +452,13 @@ async def websocket_status(websocket: WebSocket):
             await websocket.send_json(data)
         except Exception as e:
             break
+
+@app.post("/unload", response_class=JSONResponse)
+def handle_unload():
+    global request_unload, request_cancel_all
+    request_cancel_all = True
+    request_unload = True
+    return {"status": "ok"}
 
 
 # This is meant to be returned. If raised, catch yourself and return
@@ -623,6 +656,9 @@ async def load_model():
         # use loading status callback to yield to web thread
         status.update_memory(force=True)
         def callback_gen(idx, total):
+            global request_unload
+            if request_unload:
+                raise ValueError("force unloaded")
             yield 100.0 * idx / total
             status.update_memory(force=True)
             
