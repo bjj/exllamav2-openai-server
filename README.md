@@ -97,6 +97,12 @@ There is a simple webpage at `http://localhost:8000/`
 
 ![screenshot](batchplot.png)
 
+## Windows
+
+You can run on native Windows if you can set up a working python+CUDA environment. I recommend using the nvidia control panel to change "CUDA sysmem fallback policy" to "prefer no sysmem fallback" because I would rather OOM than do inference at the terrible speeds you get if you overflow into "shared" GPU memory.
+
+You can run on WSL2 by setting up CUDA using [nvidia's guide](https://docs.nvidia.com/cuda/wsl-user-guide/index.html). The server will translate Windows paths in your models.json so you can experiment with it. WSL2 access to Windows filesystems is unbelieveably slow, so models will take forever to load. If WSL2 is your long-term strategy you'll want your models in a native filesystem. On WSL2, fast models are a little faster (maybe 10%) and slow models are about the same.
+
 ## Multi GPU
 
 You can manually specify the memory split with `--gpu_split`, but it's very finicky to get right. Otherwise it will use ExLlamaV2's automatic splitting. Note that the auto splitting works by allocating as much memory as it will ever need for maximum context length and batch size. See "If you get 'Out of Memory'" above.
