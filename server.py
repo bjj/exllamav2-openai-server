@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--model", metavar="REPOSITORY", type=str, help="Initial model to load")
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
-    parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=120.0, help="Sets HTTP timeout")
+    parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=600.0, help="Sets HTTP timeout")
     parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
     parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
     parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
