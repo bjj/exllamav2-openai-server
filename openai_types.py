@@ -2,6 +2,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 import typing
 
+# Don't put defaults here or it overrides everything else
 class ChatCompletions(BaseModel):
     class Message(BaseModel):
         content: str
@@ -10,19 +11,23 @@ class ChatCompletions(BaseModel):
     
     messages: list[ChatCompletions.Message]
     model: str
-    frequency_penalty: float = 0.0
-    logic_bias: dict | None = None
+    frequency_penalty: float | None = None
+    logit_bias: dict | None = None
     logprobs: bool = False
     top_logprobs: int | None = None
     max_tokens: int | None = None
     n: int = 1
-    presence_penalty: float = 0.0
+    repetition_penalty: float | None = None # openrouter
+    presence_penalty: float | None = None
     response_format: dict | None = None
     seed: int | None = None
     stop: str | list[str] | None = None
     stream: bool = False
-    temperature: float = 1.0
-    top_p: float = 1.0
+    temperature: float  | None = None
+    top_k: int | None = None # openrouter
+    top_p: float | None = None
+    min_p: float | None = None # openrouter
+    top_a: float | None = None # openrouter
     tools: list = []
     tool_choice: str | dict | None = None
     user: str | None = None

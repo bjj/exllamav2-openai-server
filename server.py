@@ -117,21 +117,32 @@ class ServerStatus:
 
 status = ServerStatus()
 
-class QueueRequest(BaseModel):
+# these defaults are OpenRouter.ai's, not OpenAI's
+class DefaultSource(BaseModel):
+    temperature: float = 0.8
+    top_k: int = 0 # openrouter; 0 means "none" in exllamav2
+    top_p: float = 1.0
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
+    repetition_penalty: float = 1.0
+    min_p: float = 0.0
+    top_a: float = 0.0
+    logit_bias: dict | None = None
+
+class QueueRequest(DefaultSource):
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     modelfile: typing.Any
     messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
     max_tokens: int | None = None
-    temperature: float = 0.8
-    top_k: int = 50
-    top_p: float = 0.8
-    token_repetition_penalty: float = 1.05
-    token_presence_penalty: float = 0.0
-    token_frequency_penalty: float = 0.0
-    stop: list[str]
+    stop: list[str] = []
     stream: bool = False
     finish_reason: str | None = None
+    
+    def __init__(__pydantic_self__, **kv):
+        # Let caller pass None meaning "unspecified" rather than literal None
+        kv = {k: v for k, v in kv.items() if v is not None}
+        super().__init__(**kv)
 
 class QueueResponse(BaseModel):
     content: str
@@ -226,11 +237,14 @@ async def inference_loop():
         patch_gen_single_token(item.generator)
         item.settings = settings_proto.clone()
         item.settings.temperature = request.temperature
-        item.settings.top_p = request.top_p
         item.settings.top_k = request.top_k
-        item.settings.token_repetition_penalty = request.token_repetition_penalty
-        item.settings.token_presence_penalty = request.token_presence_penalty
-        item.settings.token_frequency_penalty = request.token_frequency_penalty
+        item.settings.top_p = request.top_p
+        item.settings.token_presence_penalty = request.presence_penalty
+        item.settings.token_frequency_penalty = request.frequency_penalty
+        item.settings.token_repetition_penalty = request.repetition_penalty
+        item.settings.min_p = request.min_p
+        item.settings.top_a = request.top_a
+        item.settings.token_bias = request.logit_bias or None # XXX wrong format
         item.completion_queue = request.completion_queue
         item.request = request
         token_healing_must_be_false = False # see below
@@ -521,10 +535,13 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
         completion_queue=asyncio.Queue(0),
         max_tokens=prompt.max_tokens,
         temperature=prompt.temperature,
+        top_k=prompt.top_k,
         top_p=prompt.top_p,
-        token_repetition_penalty=1.05,
-        token_presence_penalty=prompt.presence_penalty,
-        token_frequency_penalty=prompt.frequency_penalty,
+        presence_penalty=prompt.presence_penalty,
+        frequency_penalty=prompt.frequency_penalty,
+        min_p=prompt.min_p,
+        top_a=prompt.top_a,
+        logit_bias=prompt.logit_bias,
         stop=stop,
         stream=prompt.stream,
     )
