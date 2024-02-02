@@ -2,12 +2,21 @@
 # NOTE: ollama is dependent on Go's text/template and it's not easy to emulate or wrap
 # this is just dealing with basic substitutions, not {{if}} shenanigans and so on
 
-import re
+import re, platform
 import typing
 from pydantic import BaseModel
 from openai_types import ChatCompletions
 from create_model import read_registry
 
+def windows_to_wsl2_path(windows_path):
+    # Convert backslashes to forward slashes
+    wsl_path = windows_path.replace('\\', '/')
+    
+    # Replace the drive letter and colon (e.g., "C:") with "/mnt/c"
+    if wsl_path[1:3] == ':/':
+        wsl_path = '/mnt/' + wsl_path[0].lower() + wsl_path[2:]
+    
+    return wsl_path
 
 class ModelFile:
     repository: str
@@ -29,6 +38,8 @@ class ModelFile:
         except KeyError:
             raise FileNotFoundError()
         self.model_dir = record["model_dir"]
+        if platform.system() != "Windows":
+            self.model_dir = windows_to_wsl2_path(self.model_dir)
         self.created = record["created"]
         
         # defaults from ollama
