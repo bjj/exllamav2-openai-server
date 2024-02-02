@@ -282,7 +282,7 @@ async def inference_loop():
         while pending_model_request is None and (len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)):
             try:
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 update_token_rates()
                 break
             
