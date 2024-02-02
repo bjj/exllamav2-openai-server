@@ -74,6 +74,15 @@ class ServerStatus:
     token_rate_times: list[float] = [time.time()]
     token_rates: list[float] = [0.0]
 
+    mem_times: list[float] = [time.time()]
+    mems: list[list[float]] = []
+    max_mems: list[float] = []
+    
+    def __init__(self):
+        for i in range(torch.cuda.device_count()):
+            self.mems.append([0.0])
+            self.max_mems.append(torch.cuda.get_device_properties(i).total_memory / 1024**3)
+
     def update_work_items(self, n):
         if n != self.work_items[-1]:
             self.work_item_times.append(time.time())
@@ -90,6 +99,19 @@ class ServerStatus:
         if n != self.token_rates[-1] or force:
             self.token_rate_times.append(time.time() + offset)
             self.token_rates.append(n)
+            
+    def update_memory(self, force=False):
+        now = time.time()
+        if now - self.mem_times[-1] > 5.0 or force:
+            m = []
+            d = 0
+            for i in range(torch.cuda.device_count()):
+                m.append(torch.cuda.memory_reserved(i) / 1024**3)
+                d = max(d, abs(m[i] - self.mems[i][-1]))
+            if force or d > 0.1:
+                self.mem_times.append(now)
+                for i in range(torch.cuda.device_count()):
+                    self.mems[i].append(m[i])
 
 status = ServerStatus()
 
@@ -212,6 +234,7 @@ async def inference_loop():
         token_healing_must_be_false = False # see below
         item.generator.begin_stream(input_ids, item.settings, loras=loras, token_healing=token_healing_must_be_false)
         work.append(item)
+        status.update_memory()
         return True
     
     token_rate_start_time = asyncio.get_event_loop().time()
@@ -362,6 +385,7 @@ async def inference_loop():
                 update_token_rates(True)
             if eos and (prompts_queue.qsize() == 0 and not pending_model_request):
                 status.update_work_items(len(work))
+            status.update_memory()
 
 
 @app.get("/", response_class=typing.Union[HTMLResponse, FileResponse])
@@ -394,6 +418,9 @@ async def websocket_status(websocket: WebSocket):
             "rates": [
                 { "x": status.token_rate_times, "y": status.token_rates, "name": "tok/s" },
             ],
+            "mems": [
+                { "x": status.mem_times, "y": status.mems[i], "name": f"gpu{i}" } for i in range(torch.cuda.device_count())
+            ]
         }
         try:
             await websocket.send_json(data)
@@ -594,8 +621,11 @@ async def load_model():
         config.max_batch_size = MAX_PROMPTS
 
         # use loading status callback to yield to web thread
+        status.update_memory(force=True)
         def callback_gen(idx, total):
             yield 100.0 * idx / total
+            status.update_memory(force=True)
+            
         model = ExLlamaV2(config)
         if gpu_split is not None:
             loader = model.load_gen(gpu_split=gpu_split, callback_gen=callback_gen)
@@ -619,12 +649,12 @@ async def load_model():
         raise
         
     loaded_pct = None
-    print(f"Model is loaded. {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
+    print(f"Model is loaded.")
 
 
 def unload_model():
     global model, config, tokenizer, loras
-    do_print = bool(model or loras)
+    status.update_memory(force=True)
     if model:
         model.unload()
     model = None
@@ -636,9 +666,9 @@ def unload_model():
     loras = []
     gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+    status.update_memory(force=True)
     gc.collect()
-    if do_print:
-        print(f"After unload, {torch.cuda.max_memory_allocated()} CUDA bytes allocated")
 
 @app.on_event("startup")
 async def startup_event():
