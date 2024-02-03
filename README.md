@@ -11,7 +11,7 @@ This project is not affiliated with ExLlamaV2 or OpenAI.
 * Uses Ollama model metadata information to set default prompting and parameters.
 * Remembers your settings per model.
 * Loads models on demand.
-* Status endpoint with graphs! (and nothing else)
+* Status endpoint with graphs! (and one button!)
 
 I've been testing against the python openai module, [Ollama Web UI](https://github.com/ollama-webui/ollama-webui) and [continue.dev](https://continue.dev/).
 
@@ -24,11 +24,10 @@ My goals are to be able to figure out how to set up a model once (preferably by 
 
 ## Issues
 
-* I have no idea what I'm doing.
-* To combat creeping VRAM usage over time it is aggressively calling `torch.cuda.empty_cache()` which definitely has a performance impact, but it's better than running out of VRAM.
+* I have ~~no~~ _some_ idea what I'm doing.
 * It's currently streaming everything internally, which is almost certainly slowing down non-streaming requests.
 * The ExLlamaV2 class `ExLlamaV2StreamingGenerator` has too much important stuff in it to avoid using it, but it also wasn't meant to be used this way.
-* Model loading is synchronous, prompt parsing is synchronous, token decode is serialized with model inference, ...
+* Prompt parsing is synchronous, token decode is serialized with model inference, ...
 
 ## Installation
 
