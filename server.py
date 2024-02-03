@@ -355,6 +355,8 @@ async def inference_loop():
             caches = [w.cache for w in work]
             # NOTE: can run out of memory here. Need to handle that. torch.cuda.OutOfMemoryError
             logits = model.forward(inputs, caches, input_mask=None, loras=loras).float()
+            inputs = None
+            caches = None
             event = torch.cuda.Event()
             event.record(torch.cuda.default_stream())
             token_rate_count += len(work)
@@ -414,7 +416,10 @@ async def inference_loop():
                     else:
                         # reset after sending stream delta
                         item.output_str = ""
+                
+                item = None
 
+            logits = None
             # Remove completed prompts from the list
             for i in eos:
                 work.pop(i)
