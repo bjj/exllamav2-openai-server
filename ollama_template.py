@@ -7,28 +7,25 @@ import typing
 from pydantic import BaseModel
 from openai_types import ChatCompletions
 from create_model import read_registry
+from model_settings import ModelSettings
 
-def windows_to_wsl2_path(windows_path):
+def _windows_to_wsl2_path(windows_path):
     # Convert backslashes to forward slashes
     wsl_path = windows_path.replace('\\', '/')
-    
+
     # Replace the drive letter and colon (e.g., "C:") with "/mnt/c"
     if wsl_path[1:3] == ':/':
         wsl_path = '/mnt/' + wsl_path[0].lower() + wsl_path[2:]
-    
+
     return wsl_path
 
 class ModelFile:
     repository: str
-    created: int
-    template: str
-    system_prompt: str = ""
     model_dir: str
-    stop: list[str] = []
-    lora: str = None
-    max_seq_len: int = None
-    max_input_len: int = None
-    max_batch_size: int = None
+    created: int
+    settings: ModelSettings
+    our_settings: ModelSettings
+    ollama_settings: ModelSettings
 
     def __init__(self, repository):
         self.repository = repository
@@ -37,23 +34,27 @@ class ModelFile:
             record = registry[repository]
         except KeyError:
             raise FileNotFoundError()
+
         self.model_dir = record["model_dir"]
         if platform.system() != "Windows":
-            self.model_dir = windows_to_wsl2_path(self.model_dir)
+            self.model_dir = _windows_to_wsl2_path(self.model_dir)
         self.created = record["created"]
-        
+
         # defaults from ollama
         ollama = record.get("ollama", {})
         ollama_params = ollama.get("params", {})
-        self.template = ollama["template"]
-        self.system_prompt = ollama.get("system", "")
-        self.max_seq_len = ollama_params.get("num_ctx", None)
-        self.stop = ollama_params.get("stop", [])
+        self.ollama_settings = ModelSettings(
+            template=ollama.get("template"),
+            system_prompt=ollama.get("system"),
+            max_seq_len=ollama_params.get("num_ctx"),
+            stop=ollama_params.get("stop", []),
+        )
 
-        # override with command line settings from create_model.py
-        for k, v in record["settings"].items():
-            setattr(self, k, v)
-        
+        self.our_settings = ModelSettings(**record.get("settings", {}))
+
+        self.settings = self.our_settings.copy(deep=True)
+        self.settings.inherit_from(self.ollama_settings)
+
 class Prompt:
     first: bool = True
     system_prompt: str = ""
@@ -63,10 +64,10 @@ class Prompt:
 
     result: str = ""
 
-    def __init__(self, model: ModelFile):
-        if model.system_prompt is not None:
-            self.system_prompt = model.system_prompt
-        self.template = model.template.strip(" ")
+    def __init__(self, settings: ModelSettings):
+        if settings.system_prompt is not None:
+            self.system_prompt = settings.system_prompt
+        self.template = settings.template.strip(" ")
         self.template = re.sub(r"{{\s+", "{{", self.template)
         self.template = re.sub(r"\s+}}", "}}", self.template)
 
@@ -121,7 +122,7 @@ class Prompt:
 
 
 def main():
-    model = ModelFile()
+    model = ModelFile(repository="hello")
     p = Prompt(model)
     messages = [
         ChatCompletions.Message(content="MySystemMessage", role="system"),

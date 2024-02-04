@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import time
 from ollama_registry import get_ollama_model_descriptor
+from model_settings import ModelSettings
 
 registry_path = "models.json"
 
@@ -21,16 +22,11 @@ from exllamav2 import ExLlamaV2Config
 def parse_args():
     parser = argparse.ArgumentParser(description="Add a model description.")
     parser.add_argument("--model-dir", metavar="MODEL_DIRECTORY", type=str, help="Sets model_directory", required=True)
-    parser.add_argument("--lora", metavar="LORA_DIRECTORY", type=str, help="Sets lora_directory")
-    parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
-    parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
-    parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompts to process at once")
-    parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, help="Sets rope_alpha")
-    parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
-    parser.add_argument("--system_prompt", metavar="prompt", type=str, help="Override system_prompt")
-    parser.add_argument("--cache_8bit", type=bool, help="Use 8 bit kv cache")
+    parser.add_argument("--no-ollama", action='store_true', help="Make a model without ollama data")
+    ModelSettings.add_arguments(parser)
     parser.add_argument("repository")
-    return parser.parse_args(), parser
+    args = parser.parse_args()
+    return args, ModelSettings.from_args(args)
 
 def read_registry():
     global registry_path
@@ -52,7 +48,7 @@ def write_registry(registry):
     os.replace(temp_path, registry_path)
     
 async def main():
-    args, parser = parse_args()
+    args, settings = parse_args()
 
     registry = read_registry()
     
@@ -62,17 +58,17 @@ async def main():
     config.prepare()
 
     # Get ollama's description of the model
-    ollama_descr = await get_ollama_model_descriptor(args.repository, debug=True)
+    if not args.no_ollama:
+        ollama_descr = await get_ollama_model_descriptor(args.repository, debug=True)
+    else:
+        ollama_descr = {}
 
     record = {
         "model_dir": args.model_dir,
-        "settings": {},
+        "settings": settings.dict(),
         "ollama": ollama_descr,
         "created": int(time.time()),
     }
-    for setting in [x.dest for x in parser._actions if isinstance(x, argparse._StoreAction) and not x.required]:
-        if getattr(args, setting) is not None:
-            record["settings"][setting] = getattr(args, setting)
 
     if args.repository in registry:
         print(f"Replacing model {args.repository}, was:\n{json.dumps(registry[args.repository], indent=4)}")

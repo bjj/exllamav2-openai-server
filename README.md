@@ -60,6 +60,8 @@ python .\create_model.py --model-dir E:\exl2-llm-models\turboderp\Mixtral-8x7B-i
 
 You can add models while the server is running. It reads the `models.json` file again whenever it needs to know about the models.
 
+If there is no corresponding Ollama library config for your model, you can use `create_model.py --no-ollama` and specify everything (template, system prompt, etc) on the command line.
+
 ## Running the Server
 
 You can run the server with no arguments. It will listen on `0.0.0.0:8000` by default:
@@ -82,13 +84,15 @@ You can do a quick test with `curl http://localhost:8000/v1/models`
 
 ## If you get "Out of Memory"
 
-When loading the model, the automatic GPU splitting in ExLlamaV2 allocates all the memory it could possibly need to satisfy the batching and context requirements. If you run out of memory (or your model loads onto two GPUs when you are sure it should fit on one):
+When loading the model, the automatic GPU splitting in ExLlamaV2 allocates all the memory it could possibly need to satisfy the batching and context requirements. If you run out of memory (or your model loads onto two GPUs when you are sure it should fit on one), you can try these ideas.
 
-* Use `--cache_8bit` to reduce the memory footprint of the cache. This has a significant effect without sacrificing much.
-* Reduce the maximum batch size per-model or on the `server.py` command line with `--max-batch-size`. Maximum throughput can be achieved with fairly low batch sizes. Going higher than that just lets more users see progress happening on streaming requests at once.
-* Reduce the maximum context size per-model or on the `server.py` command line with `--max-seq-len`. This will catch you out on small models with huge context like `dolphin-mistral:7b`.
-* There is a very small effect from reducing `--max-input-len`.
-* If you use manual `--gpu_split` you will load the model without accounting for the memory needed to actually handle requests. This will work fine if you don't get many concurrent requests and/or don't use much context, but you risk running out of memory unexpectedly later.
+Try one of these options when creating the model with `create_model.py` or when launching `server.py`. Remember, command line arguments override model configuration:
+* Use `--cache-8bit` to reduce the memory footprint of the cache. This has a significant effect on memory without sacrificing much accuracy or speed.
+* Use `--max-batch-size` to reduce the batching. Maximum throughput can be achieved with fairly low batch sizes. Going higher than that just lets more users see progress happening on streaming requests at once.
+* Use `--max-seq-len` to reduce the maximum context length. If the model supports especially large context size this can catch you out, for example `dolphin-mistral:7b` or `mixtral`.
+* Use `--max-input-len` to change an internal batching size, which has a very small effect.
+
+If you use manual `--gpu_split` you will load the model without accounting for the memory needed to actually handle requests. This will work fine if you don't get many concurrent requests and/or don't use much context, but you risk running out of memory unexpectedly later.
 
 ## Monitoring
 

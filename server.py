@@ -10,6 +10,7 @@ from openai_types import *
 from fastapi_helpers import StreamingJSONResponse
 import ollama_template
 from create_model import read_registry
+from model_settings import ModelSettings
 
 # Run exllamav2 from a git checkout in a sibling dir
 #sys.path.append(
@@ -26,7 +27,6 @@ from exllamav2 import (
 )
 from exllamav2.generator import ExLlamaV2Sampler, ExLlamaV2StreamingGenerator
 
-
 def parse_args():
     parser = argparse.ArgumentParser(description="OpenAI compatible server for exllamav2.")
     parser.add_argument("--verbose", action="store_true", default=False, help="Sets verbose")
@@ -34,35 +34,28 @@ def parse_args():
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=600.0, help="Sets HTTP timeout")
-    parser.add_argument("--max-seq-len", metavar="NUM_TOKENS", type=int, help="Sets context length")
-    parser.add_argument("--max-input-len", metavar="NUM_TOKENS", type=int, help="Sets input length")
-    parser.add_argument("--max-batch-size", metavar="N", type=int, help="Max prompt batch size")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
                         help="Sets array gpu_split and accepts input like 16,24. Default is automatic")
-    parser.add_argument("--rope_alpha", metavar="rope_alpha", type=float, default=1.0, help="Sets rope_alpha")
-    parser.add_argument("--rope_scale", metavar="rope_scale", type=float, help="Sets rope_scale")
-    parser.add_argument("--cache_8bit", action="store_true", help="Use 8 bit cache")
+    ModelSettings.add_arguments(parser)
 
     return parser.parse_args()
-
-
-args = parse_args()
-
-what = torch.inference_mode()
-
+ 
 def load_modelfile(repository):
     return ollama_template.ModelFile(repository)
+
+def activate_modelfile(_modelfile):
+    global modelfile, active_settings
+    modelfile = _modelfile
+    if modelfile is None:
+        active_settings = None
+    else:
+        active_settings = args_settings.copy(deep=True)
+        active_settings.inherit_from(modelfile.settings, ModelSettings.defaults())
 
 request_unload = False
 request_cancel_all = False
 loaded_pct = None
-modelfile = None
-if args.model:
-    try:
-        modelfile = load_modelfile(args.model)
-    except FileNotFoundError:
-        print(f"Could not load model {args.model}. Try python create_model.py...")
-        sys.exit(1)
+
         
 app = FastAPI()
 
@@ -117,25 +110,14 @@ class ServerStatus:
 
 status = ServerStatus()
 
-# these defaults are OpenRouter.ai's, not OpenAI's
-class DefaultSource(BaseModel):
-    temperature: float = 0.8
-    top_k: int = 0 # openrouter; 0 means "none" in exllamav2
-    top_p: float = 1.0
-    presence_penalty: float = 0.0
-    frequency_penalty: float = 0.0
-    repetition_penalty: float = 1.0
-    min_p: float = 0.0
-    top_a: float = 0.0
-    logit_bias: dict | None = None
-
-class QueueRequest(DefaultSource):
+# XXX this inheritance isn't ideal because there are config settings in here too which won't work,
+# but the client can only actually specify things in ChatCompletions
+class QueueRequest(ModelSettings):
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     modelfile: typing.Any
     messages: list[ChatCompletions.Message]
     completion_queue: typing.Any  # asyncio.Queue
     max_tokens: int | None = None
-    stop: list[str] = []
     stream: bool = False
     finish_reason: str | None = None
     
@@ -158,7 +140,6 @@ processing_started = False
 model = None
 tokenizer = None
 loras = []
-settings_proto = ExLlamaV2Sampler.Settings()
 
 
 # We need the power of ExLlamaV2StreamingGenerator but we want to
@@ -191,7 +172,7 @@ class WorkItem:
     generator: any
     output_str: str = ""
     cache: any
-    settings: any
+    exllamav2_settings: any
     completion_queue: any
     request: QueueRequest
     completion_tokens: int = 0
@@ -199,7 +180,7 @@ class WorkItem:
     first_content: bool = True
 
 async def inference_loop():
-    global prompts_queue, processing_started, status, settings_proto, modelfile, tokenizer, model, config
+    global prompts_queue, processing_started, status, modelfile, tokenizer, model, config
     processing_started = True
 
     # throttle streaming to 10/s instead of making big JSON HTTP responses for every token
@@ -214,7 +195,8 @@ async def inference_loop():
         if request.finish_reason:
             return False
         
-        chat = ollama_template.Prompt(modelfile).chatString(request.messages)
+        request.inherit_from(active_settings)
+        chat = ollama_template.Prompt(request).chatString(request.messages)
         #print(chat)
 
         input_ids = tokenizer.encode(chat)
@@ -230,25 +212,17 @@ async def inference_loop():
         item.prompt_tokens = n_input_tokens
         batch_size = 1
         max_tokens = request.max_tokens or config.max_seq_len
-        CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
+        CacheClass = ExLlamaV2Cache_8bit if active_settings.cache_8bit else ExLlamaV2Cache
         item.cache = CacheClass(model, max_seq_len=min(config.max_seq_len, (n_input_tokens + max_tokens)), batch_size=batch_size)
         item.generator = ExLlamaV2StreamingGenerator(model, item.cache, tokenizer)
-        item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop, *modelfile.stop])
         patch_gen_single_token(item.generator)
-        item.settings = settings_proto.clone()
-        item.settings.temperature = request.temperature
-        item.settings.top_k = request.top_k
-        item.settings.top_p = request.top_p
-        item.settings.token_presence_penalty = request.presence_penalty
-        item.settings.token_frequency_penalty = request.frequency_penalty
-        item.settings.token_repetition_penalty = request.repetition_penalty
-        item.settings.min_p = request.min_p
-        item.settings.top_a = request.top_a
-        item.settings.token_bias = request.logit_bias or None # XXX wrong format
+        item.exllamav2_settings = ExLlamaV2Sampler.Settings()
+        request.apply_to_exllamav2_settings(item.exllamav2_settings)
+        item.generator.set_stop_conditions([tokenizer.eos_token_id, *request.stop])
         item.completion_queue = request.completion_queue
         item.request = request
         token_healing_must_be_false = False # see below
-        item.generator.begin_stream(input_ids, item.settings, loras=loras, token_healing=token_healing_must_be_false)
+        item.generator.begin_stream(input_ids, item.exllamav2_settings, loras=loras, token_healing=token_healing_must_be_false)
         work.append(item)
         status.update_memory()
         return True
@@ -294,7 +268,7 @@ async def inference_loop():
         global request_unload
         if request_unload and not work:
             pending_model_request = None
-            modelfile = None
+            activate_modelfile(None)
             unload_model()
             request_unload = False
 
@@ -302,15 +276,15 @@ async def inference_loop():
         if pending_model_request and not work:
             update_token_rates(True)
             try:
-                modelfile = pending_model_request.modelfile
+                activate_modelfile(pending_model_request.modelfile)
                 await load_model()
                 if await add_workitem(pending_model_request):
                     added = True
-            except:
+            except Exception as e:
                 response = QueueResponse(status_code=500, finish_reason="server_error",
                                          content=f"Unable to load requested model {modelfile.repository}.")
                 await pending_model_request.completion_queue.put(response)
-                modelfile = None
+                activate_modelfile(None)
             pending_model_request = None
             update_queue_depths()
             update_token_rates(True)
@@ -319,7 +293,7 @@ async def inference_loop():
         # If pending model request, do not add more work items.
         # Else enter this (possibly blocking) loop if there's nothing to do (ok to block)
         #      or if we could accept more work and the queue isn't empty (no blocking)
-        while pending_model_request is None and (len(work) == 0 or (len(work) < MAX_PROMPTS and prompts_queue.qsize() != 0)):
+        while pending_model_request is None and (len(work) == 0 or (len(work) < config.max_batch_size and prompts_queue.qsize() != 0)):
             try:
                 request: QueueRequest = await asyncio.wait_for(prompts_queue.get(), 0.5)
             except asyncio.TimeoutError:
@@ -535,19 +509,8 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
             
     request = QueueRequest(
         modelfile=last_queued_modelfile,
-        messages=prompt.messages,
         completion_queue=asyncio.Queue(0),
-        max_tokens=prompt.max_tokens,
-        temperature=prompt.temperature,
-        top_k=prompt.top_k,
-        top_p=prompt.top_p,
-        presence_penalty=prompt.presence_penalty,
-        frequency_penalty=prompt.frequency_penalty,
-        min_p=prompt.min_p,
-        top_a=prompt.top_a,
-        logit_bias=prompt.logit_bias,
-        stop=stop,
-        stream=prompt.stream,
+        **prompt.dict()
     )
 
     await prompts_queue.put(request)
@@ -559,11 +522,11 @@ async def chat_completions(fastapi_request: Request, prompt: ChatCompletions):
     async def gen():
         while request.finish_reason is None:
             try:
-                qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=args.timeout)
+                qresponse: QueueResponse = await asyncio.wait_for(request.completion_queue.get(), timeout=timeout)
                 request.finish_reason = qresponse.finish_reason
             except asyncio.TimeoutError:
                 request.finish_reason = "timeout" # abort inference
-                raise ApiErrorResponse(status_code=408, type="timeout", message=f"Processing did not complete within {args.timeout} seconds.")
+                raise ApiErrorResponse(status_code=408, type="timeout", message=f"Processing did not complete within {timeout} seconds.")
             if qresponse.status_code >= 300:
                 raise ApiErrorResponse(status_code=qresponse.status_code, type=qresponse.finish_reason,
                                        message=qresponse.content)
@@ -631,48 +594,26 @@ async def api_models():
     return response
     
 
-async def setup_gpu_split():
+def setup_gpu_split(args):
     global gpu_split
     gpu_split = None
     if args.gpu_split:
         gpu_split = list(map(float, args.gpu_split.split(",")))
 
 async def load_model():
-    global args, model, modelfile, tokenizer, loras, config, MAX_PROMPTS, gpu_split, loaded_pct
+    global args, model, modelfile, active_settings, tokenizer, loras, config, gpu_split, loaded_pct
     
     unload_model()
     
     print("Loading model: " + modelfile.repository)
     print("From: " + modelfile.model_dir)
-    
-    MAX_PROMPTS = args.max_batch_size or modelfile.max_batch_size or 8
+    print("Settings: " + repr(active_settings))
     
     try:
         config = ExLlamaV2Config()
         config.model_dir = modelfile.model_dir
         config.prepare()
-        
-        if args.rope_scale is not None:
-            config.scale_pos_emb = args.rope_scale
-        elif hasattr(modelfile, 'rope_scale'):
-            config.scale_pos_emb = modelfile.rope_scale
-            
-        if args.rope_alpha is not None:
-            config.scale_rope_alpha = args.rope_alpha
-        elif hasattr(modelfile, 'rope_alpha'):
-            config.scale_rope_alpha = modelfile.rope_alpha
-        
-        if modelfile.max_seq_len:
-            config.max_seq_len = modelfile.max_seq_len
-        if args.max_seq_len:
-            config.max_seq_len = args.max_seq_len
-            
-        if modelfile.max_input_len:
-            config.max_input_len = modelfile.max_input_len
-        if args.max_input_len:
-            config.max_input_len = args.max_input_len
-            
-        config.max_batch_size = MAX_PROMPTS
+        active_settings.apply_to_config(config)
 
         # use loading status callback to yield to web thread
         status.update_memory(force=True)
@@ -687,7 +628,7 @@ async def load_model():
         if gpu_split is not None:
             loader = model.load_gen(gpu_split=gpu_split, callback_gen=callback_gen)
         else:
-            CacheClass = ExLlamaV2Cache_8bit if args.cache_8bit else ExLlamaV2Cache
+            CacheClass = ExLlamaV2Cache_8bit if active_settings.cache_8bit else ExLlamaV2Cache
             scratch_cache = CacheClass(model, max_seq_len=config.max_seq_len, batch_size=config.max_batch_size, lazy = True)
             loader = model.load_autosplit_gen(scratch_cache, callback_gen=callback_gen)
         for pct in loader:
@@ -695,8 +636,8 @@ async def load_model():
             await asyncio.sleep(0)
             
         tokenizer = ExLlamaV2Tokenizer(config)
-        if modelfile.lora:
-            lora = ExLlamaV2Lora.from_directory(model, args.lora)
+        if active_settings.lora:
+            lora = ExLlamaV2Lora.from_directory(model, active_settings.lora)
             loras.append(lora)
     except Exception as e:
         import traceback
@@ -732,7 +673,6 @@ async def startup_event():
     global args, modelfile
     
     print("Starting up...")
-    await setup_gpu_split()
     if modelfile:
         await load_model()
     asyncio.create_task(inference_loop())
@@ -749,6 +689,22 @@ async def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
 
+    args = parse_args()
+    global args_settings
+    args_settings = ModelSettings.from_args(args)
+    if args.model:
+        try:
+            activate_modelfile(load_modelfile(args.model))
+            # xxx oops not loading model
+        except FileNotFoundError:
+            print(f"Could not load model {args.model}. Try python create_model.py...")
+            sys.exit(1)
+    else:
+        activate_modelfile(None)
+    global timeout
+    timeout = args.timeout
+    setup_gpu_split(args)
+    
     print(f"Starting a server at {args.host} on port {args.port}...")
     uvicorn.run(
         "__main__:app",
