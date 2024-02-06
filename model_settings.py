@@ -1,29 +1,30 @@
 import argparse, re
 from pydantic import BaseModel, Field
 import typing
+from typing import Optional
 
 # transforms -> middle-out from openrouter.ai
 
 class ModelSettings(BaseModel):
-    system_prompt: str | None
-    template: str | None
-    stop: list[str] | None
-    lora: str | None
-    max_seq_len: int | None
-    max_input_len: int | None
-    max_batch_size: int | None
-    rope_alpha: float | None
-    rope_scale: float | None
-    cache_8bit: bool | None
-    temperature: float | None
-    top_k: int | None
-    top_p: float | None
-    presence_penalty: float | None
-    frequency_penalty: float | None
-    repetition_penalty: float | None
-    min_p: float | None
-    top_a: float | None
-    logit_bias: dict[str, float] | None
+    system_prompt: Optional[str] = None
+    template: Optional[str] = None
+    stop: Optional[list[str]] = None
+    lora: Optional[str] = None
+    max_seq_len: Optional[int] = None
+    max_input_len: Optional[int] = None
+    max_batch_size: Optional[int] = None
+    rope_alpha: Optional[float] = None
+    rope_scale: Optional[float] = None
+    cache_8bit: Optional[bool] = None
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    min_p: Optional[float] = None
+    top_a: Optional[float] = None
+    logit_bias: Optional[dict[str, float]] = None
 
     def apply_to_exllamav2_settings(self, settings):
         """
@@ -78,20 +79,32 @@ class ModelSettings(BaseModel):
         """
         Adds command line arguments to a given parser based on the fields in the ModelSettings class.
         """
-        for name, field in ModelSettings.__fields__.items():
+        for name, field in ModelSettings.model_fields.items():
             arg_name = (field.alias or name).replace('_', '-')
+            required = True
+            key_type = None
+            is_complex = False
+            type_ = typing.get_origin(field.annotation)
+            if type_ is typing.Union:
+                required = False # union w/None
+                type_ = typing.get_args(field.annotation)[0]
+            if typing.get_args(type_):
+                keyvalue = (None,) + typing.get_args(type_)
+                key_type, type_ = keyvalue[-2:]
+                is_complex = True
+
             add = {
-                # "required": field.required
+                "required": required
             }
-            if field.type_ == bool:
+            if type_ == bool:
                 # store_true will default False rather than None and override
                 add["action"] = 'store_const'
                 add["const"] = True
-            elif field.key_field is not None: # logit_bias
+            elif key_type is not None: # logit_bias
                 add["action"] = _StoreDictStrFloat
             else:
-                add["type"] = field.type_
-                if field.is_complex():
+                add["type"] = type_
+                if is_complex:
                     add["action"] = 'append'
             parser.add_argument(f"--{arg_name}", **add)
 
