@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocket
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from openai_types import *
 from fastapi_helpers import StreamingJSONResponse
@@ -34,6 +35,7 @@ def parse_args():
     parser.add_argument("--host", metavar="HOST", type=str, default="0.0.0.0", help="Sets host")
     parser.add_argument("--port", metavar="PORT", type=int, default=8000, help="Sets port")
     parser.add_argument("--timeout", metavar="TIMEOUT", type=float, default=600.0, help="Sets HTTP timeout")
+    parser.add_argument("--cors", action="store_true", help="Wide open CORS settings")
     parser.add_argument("--gpu_split", metavar="GPU_SPLIT", type=str, default="",
                         help="Sets array gpu_split and accepts input like 16,24. Default is automatic")
     ModelSettings.add_arguments(parser)
@@ -690,6 +692,16 @@ if __name__ == "__main__":
     import uvicorn
 
     args = parse_args()
+
+    if args.cors:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     global args_settings
     args_settings = ModelSettings.from_args(args)
     if args.model:
